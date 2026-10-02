@@ -2,8 +2,8 @@
 
 > **Companion to:** `PROJECT.md` (the vision). This file is the **execution plan**: what we build, in what order, and how we know a phase is done.
 > **Scope:** Phase 0 (environment) to the end of V1. Nothing from V2/V3.
-> **Last updated:** 2026-10-01
-> **Current phase:** Phase 0, Environment preparation
+> **Last updated:** 2026-10-02
+> **Current phase:** Phase 0, Environment preparation (0.1 to 0.3 done; next: 0.4 Python project setup)
 > **Locked stack decisions:** embeddings = `google/embeddinggemma-300m` (local, 768 dims, multilingual) · LLM = Gemini Flash-Lite family (free tier) · Postgres + pgvector in Docker · UI = Streamlit
 
 ---
@@ -23,7 +23,7 @@
 
 | # | Phase | Status | Key deliverable |
 |---|-------|--------|-----------------|
-| 0 | Environment preparation | 🟨 | Reproducible dev setup, Docker services up, Gemini key + Hugging Face access working |
+| 0 | Environment preparation | 🟨 | 0.1 to 0.3 done (machine, accounts, repo). Next: 0.4 to 0.6 (Python project, Docker services, tooling and CI) |
 | 1 | Project skeleton and FastAPI foundation | ⬜ | Running API with config, logging, health check, tests |
 | 2 | Storage and database layer | ⬜ | Upload a PDF → stored in S3/MinIO + metadata in Postgres |
 | 3 | Document processing (extract, clean, chunk) | ⬜ | PDF → clean, page-aware chunks (~350 tokens) |
@@ -228,6 +228,22 @@ enterprise-doc-intelligence/
 
 ---
 
+## Owner environment notes (recorded 2026-10-02)
+
+- **OS:** Windows. Commands and scripts in this project must work in PowerShell/Windows (not only Linux shells).
+- **Project location:** `D:\Backup\School\Project\enterprise-doc-intelligence`
+- **Installed:** Git, Python 3.12.14 (via `uv`; 3.14 also exists globally), `uv` 0.12.21, Docker 29.8.1 + Compose v5.5.1 (Docker disk image on D:), VS Code 1.139.1 (Python, Ruff, Docker extensions), PostgreSQL 18.3 + pgAdmin (`psql` on PATH).
+- **Hardware:** 16 GB RAM; C: about 18 GB free; D: about 368 GB free.
+- **Consequences to keep in mind:**
+  1. **Port clash:** the local PostgreSQL 18 service normally uses port 5432, so the Docker Postgres uses host port **5433**.
+  2. **C: is tight:** the Hugging Face cache (about 1.2 GB), PyTorch and package caches default to C:. If space gets low, move them to D: (for example by setting `HF_HOME` to a folder on D:).
+  3. **`make` on Windows** may be missing (see 0.6).
+  4. **GitHub auth** is a fine-grained token (HTTPS). PRs can be created from the GitHub web page. Never paste tokens or API keys into chat, and never commit them.
+- **Gemini free-tier limits (read from the owner's AI Studio console):** `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` both 15 requests/min, 250K tokens/min, 500 requests/day. This matches the third-party measurement in D2. Re-check at the start of Phase 6.
+- **Owner working preference:** one step at a time, concise practical instructions, and the owner confirms each result before the next step.
+
+---
+
 # PHASES
 
 ---
@@ -237,39 +253,40 @@ enterprise-doc-intelligence/
 **Goal:** A clean, reproducible, safe workspace so that later phases never stall on tooling problems.
 **Why it matters:** Most "senior" habits (pinned versions, secrets hygiene, one-command setup) are cheap now and painful to add later.
 
-### 0.1 Local machine
-- [ ] Install Git and configure `user.name` / `user.email`
-- [ ] Install Python 3.12 (via `uv` or `pyenv`)
-- [ ] Install `uv`
-- [ ] Install Docker Desktop (or Docker Engine) and verify `docker run hello-world`
-- [ ] Install Docker Compose (bundled with Docker Desktop) and verify `docker compose version`
-- [ ] Install an editor with Python support (VS Code + Python, Ruff, Docker extensions)
-- [ ] Install a DB client (DBeaver or `psql`) to inspect Postgres
-- [ ] Check free disk space (the embedding model is about 1.2 GB, and PyTorch plus Docker images take several more GB) and RAM (16 GB is comfortable; 8 GB works but is tighter)
-- [ ] ~~Install AWS CLI v2~~ → moved to Phase 11 (see decision D3)
+### 0.1 Local machine ✅
+- [x] Install Git and configure `user.name` / `user.email`
+- [x] Install Python 3.12 (via `uv` or `pyenv`) (3.12.14 via `uv`; Python 3.14 also exists globally, so always pin 3.12 explicitly)
+- [x] Install `uv`
+- [x] Install Docker Desktop (or Docker Engine) and verify `docker run hello-world`
+- [x] Install Docker Compose (bundled with Docker Desktop) and verify `docker compose version`
+- [x] Install an editor with Python support (VS Code + Python, Ruff, Docker extensions)
+- [x] Install a DB client (DBeaver or `psql`) to inspect Postgres (PostgreSQL 18.3 + pgAdmin installed locally, `psql` on PATH)
+- [x] Check free disk space and RAM (16 GB RAM; C: about 18 GB free; D: about 368 GB free; Docker disk image is on D:)
+- [x] ~~Install AWS CLI v2~~ → moved to Phase 11 (see decision D3)
 
-### 0.2 Accounts and keys
-- [ ] GitHub account + SSH key (or HTTPS token) configured
-- [ ] **AWS account: deliberately NOT created yet.** New accounts get a credit plan lasting about 6 months from signup, so we open it right before Phase 11 (see D3). Phases 0 to 10 run fully local (MinIO replaces S3). The AWS safety checklist (MFA, IAM user, budget alert) lives in Phase 11.
-- [ ] **Hugging Face account**, open the EmbeddingGemma page, **accept the Gemma license**, and create a **read-only access token**. Put it in `.env` as `HF_TOKEN` (never in git)
-- [ ] Download the model once and run a tiny test: embed one question and one sentence, confirm the vector has **768 numbers**
-- [ ] Create a Google AI Studio API key (Gemini) and put it in `.env` (never in git)
-- [ ] Find your **real free-tier limits** for `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` in the AI Studio rate-limit console (or read them from a 429 error body) and write them in `docs/provider_limits.md` with the date
-- [ ] Verify the model names exist for your key (a one-line test call for each); if a name is unavailable, record the closest Flash-Lite model that works
+### 0.2 Accounts and keys ✅
+- [x] GitHub account + HTTPS authentication with a fine-grained Personal Access Token (Contents: read and write). SSH not used
+- [x] **AWS account: deliberately NOT created yet (still the plan).** New accounts get a credit plan lasting about 6 months from signup, so we open it right before Phase 11 (see D3). Phases 0 to 10 run fully local (MinIO replaces S3). The AWS safety checklist (MFA, IAM user, budget alert) lives in Phase 11.
+- [x] **Hugging Face account**, open the EmbeddingGemma page, **accept the Gemma license**, and create a **read-only access token**. Put it in `.env` as `HF_TOKEN` (never in git)
+- [x] Download the model once and run a tiny test: embed one question and one sentence, confirm the vector has **768 numbers** (done: both gave 768; the model is in the Hugging Face cache, outside the project)
+- [x] Create a Google AI Studio API key (Gemini) and put it in `.env` (never in git)
+- [x] Find your **real free-tier limits** for `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` in the AI Studio rate-limit console. Result: **both 15 requests/min, 250K tokens/min, 500 requests/day**
+- [ ] Write those limits in `docs/provider_limits.md` with the date (draft file prepared; add it to the repo when `docs/` gets its first real file)
+- [x] Verify the model names exist for your key (a one-line test call for each); if a name is unavailable, record the closest Flash-Lite model that works (both names work)
 - [ ] (Optional, later) Install Ollama if you ever want a local/offline LLM. Not required for V1
 
-### 0.3 Repository
-- [ ] Create the GitHub repo `enterprise-doc-intelligence` (private at first)
-- [ ] Add the target folder structure (empty folders with `.gitkeep`)
-- [ ] Add `PROJECT.md` and `ROADMAP.md`
-- [ ] Create a proper `.gitignore` (Python, `.env`, `data/` private files, `.venv`, IDE files, model caches)
-- [ ] Create `.env.example` (all variable names, **no real secrets**) and a local `.env` (git-ignored)
-- [ ] Choose a branching habit: `main` is always working; work on `feature/...` branches and merge via PR (even solo)
-- [ ] Adopt **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`)
+### 0.3 Repository ✅
+- [x] Create the GitHub repo `enterprise-doc-intelligence` (private at first)
+- [x] Add the target folder structure (including `tests/unit` and `tests/integration`). **Decision: no `.gitkeep` files.** Git doesn't track empty folders, so each folder appears in the repo when its first real file is added
+- [x] Add `PROJECT.md` and `ROADMAP.md` (see the changelog: these two files were rewritten afterwards, so the repo copies must be refreshed)
+- [x] Create a proper `.gitignore` (Python, `.env`, `data/` private files, `.venv`, IDE files, model caches)
+- [x] Create `.env.example` (all variable names, **no real secrets**) and a local `.env` (git-ignored)
+- [x] Choose a branching habit: `main` is always working; work on `feature/...` branches and merge via PR (even solo). No feature branch is created until real feature work starts
+- [x] Adopt **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`). First commit: `chore: initialize project repository`, pushed to `origin/main`, working tree clean
 
 ### 0.4 Python project setup
-- [ ] `uv init` and create `pyproject.toml`
-- [ ] Pin the Python version (`.python-version`)
+- [ ] `uv init` and create `pyproject.toml` (a `pyproject.toml` placeholder already exists from 0.3: review it and complete it, don't overwrite blindly)
+- [ ] Pin the Python version (`.python-version`) to **3.12** (3.14 also exists on this machine, so be explicit)
 - [ ] Add initial dependencies: `fastapi`, `uvicorn`, `pydantic-settings`, `sqlalchemy`, `alembic`, `psycopg`, `boto3`
 - [ ] Add dev dependencies: `pytest`, `pytest-cov`, `httpx`, `ruff`, `pre-commit`
 - [ ] Configure `ruff` in `pyproject.toml`
@@ -278,6 +295,7 @@ enterprise-doc-intelligence/
 
 ### 0.5 Local infrastructure with Docker Compose
 - [ ] `docker-compose.yml` with **PostgreSQL + pgvector** (image `pgvector/pgvector`)
+- [ ] **Map the Docker Postgres to host port 5433** (not 5432): PostgreSQL 18 is also installed locally on this machine and normally uses 5432, which would clash. `DATABASE_URL` must use the chosen port
 - [ ] Add **MinIO** (local S3) with a persistent volume
 - [ ] Named volumes for persistence
 - [ ] Health checks for each service
@@ -286,8 +304,8 @@ enterprise-doc-intelligence/
 - [ ] Verify: upload and download a file to MinIO via `boto3` using the S3 API
 
 ### 0.6 Developer experience
-- [ ] `Makefile` with: `make up`, `make down`, `make test`, `make lint`, `make fmt`, `make run`
-- [ ] Minimal GitHub Actions workflow: install deps → `ruff` → `pytest` (CI never downloads the real embedding model or calls the real LLM)
+- [ ] `Makefile` with: `make up`, `make down`, `make test`, `make lint`, `make fmt`, `make run`. **Windows note:** `make` is not installed by default; first check it works in your terminal, otherwise choose an equivalent (for example `just` or small PowerShell scripts) and keep the same command names
+- [ ] Minimal GitHub Actions workflow: install deps → `ruff` → `pytest` (CI never downloads the real embedding model or calls the real LLM). **Note:** pushing workflow files with a fine-grained token needs its *Workflows: read and write* permission
 - [ ] Collect 3 to 5 **sample PDFs** (public/non-sensitive: a public HR policy template, a technical doc, a short report) in `data/sample_docs/`. Include at least one multi-page, one with tables, **one French (or Arabic) PDF to verify multilingual retrieval**, and ideally one scanned/image-only PDF to test a known limitation.
 
 ### ✅ Definition of Done, Phase 0
@@ -662,6 +680,8 @@ Multi-tenant organizations, agentic workflows, infrastructure-as-code (Terraform
 | 2026-09-30 | Researched and resolved parking-lot decisions (D1 to D4). Postgres on EC2 (RDS = upgrade path). UI promoted to a committed phase (Streamlit). AWS account creation deferred to Phase 11 because the new-account credit plan lasts ~6 months from signup. Added a "Future versions" section with V1 hooks. |
 | 2026-09-30 | Embeddings first set to `all-MiniLM-L6-v2`; LLM locked to Gemini Flash-Lite (`gemini-3.5-flash-lite`, backup `gemini-3.1-flash-lite`). Newer measurements show full Flash models at ~20 requests/day on free keys vs ~500/day for Flash-Lite, correcting my earlier "generous" description. Added quota-aware tasks. |
 | 2026-10-01 | **Embeddings changed to `google/embeddinggemma-300m`** (768 dims, 2,048-token input, 100+ languages, ~1.25 GB RAM), verified on the official model card. Reason: MiniLM was English-only with a 256-token cap; EmbeddingGemma is the strongest option found that still fits a small CPU server. **No model-comparison step in Phase 5** (decision by the project owner: use the best fitting model directly). Changes: `vector(768)`, chunks ~350 tokens (hard max 512), `encode_query`/`encode_document` prompts with document title, Hugging Face account + license + token in Phase 0 (gated model), model baked into Docker image with a build secret, memory measured in Phase 10. Added a Learning glossary. Phase 11: Airflow-in-cloud stays an open decision, now with three options (A full, B no Airflow, C read-only demo). |
+| 2026-10-01 | `PROJECT.md` rewritten to be **non-technical** (idea, purpose, scope, principles, future ideas). Technical content lives only in this file. |
+| 2026-10-02 | **Phase 0.1, 0.2 and 0.3 completed** (machine, accounts and keys, repository). EmbeddingGemma downloaded and tested (768 dims). Both Gemini Flash-Lite models tested; real limits recorded (15 RPM / 250K TPM / 500 RPD). Repo created and first commit pushed. Decisions: HTTPS + fine-grained token (no SSH); no `.gitkeep` files. Added owner environment notes (Windows, port 5433 for Docker Postgres, C: space, `make` on Windows, workflow-file token permission). |
 
 # Open questions / parking lot
 
@@ -671,9 +691,9 @@ Multi-tenant organizations, agentic workflows, infrastructure-as-code (Terraform
 - [x] Postgres: in Docker on EC2 for V1, RDS as upgrade path (D3)
 - [x] UI: yes, Streamlit, committed as Phase 8 (D4)
 - [x] Language of documents: no longer a blocker, the model is multilingual
+- [x] Your real Gemini free-tier limits: 15 RPM / 250K TPM / 500 RPD on both Flash-Lite models (recorded 2026-10-02)
+- [x] Your OS, RAM, disk and installed tools: Windows, 16 GB RAM, see the environment notes
 
 **Still open (each has a decision point):**
 - [ ] **Airflow / ingestion in the cloud: option A, B or C** (start of Phase 11, using Phase 10 memory numbers and how the pipeline behaves in practice)
-- [ ] Your real Gemini free-tier limits (read from your own AI Studio console in Phase 0)
 - [ ] Do we want a custom domain + HTTPS for the demo? (Phase 11, optional)
-- [ ] Your OS, RAM and free disk space, and what is already installed (needed to start Phase 0.1)

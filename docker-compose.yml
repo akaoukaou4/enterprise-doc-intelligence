@@ -1,0 +1,103 @@
+# =============================================================================
+# Enterprise Document Intelligence — Local Infrastructure
+# Services: PostgreSQL + pgvector, MinIO
+# MinIO initialization: one-time bucket creation via MinIO Client
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL + pgvector
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: enterprise-doc-intelligence-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: enterprise_docs
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_password # pragma: allowlist secret
+
+    ports:
+      # Host 5433 -> Container 5432
+      # Host PostgreSQL already uses 5432.
+      - "5433:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U app -d enterprise_docs" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MinIO — local S3-compatible object storage
+  # ---------------------------------------------------------------------------
+  minio:
+    image: ghcr.io/coollabsio/minio:latest
+    container_name: enterprise-doc-intelligence-minio
+    restart: unless-stopped
+
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+
+    environment:
+      MINIO_ROOT_USER: minioadmin # pragma: allowlist secret
+      MINIO_ROOT_PASSWORD: minioadmin123 # pragma: allowlist secret
+
+    ports:
+      # S3 API
+      - "9000:9000"
+
+      # MinIO Web Console
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+  # ---------------------------------------------------------------------------
+  # MinIO initialization / readiness check
+  #
+  # This container waits until MinIO accepts S3 connections,
+  # then creates the application bucket.
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: pgsty/mc:latest
+    container_name: enterprise-doc-intelligence-minio-init
+    restart: "no"
+
+    depends_on:
+      minio:
+        condition: service_started
+
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin123 2>/dev/null; do  # pragma: allowlist secret
+          echo "Waiting for MinIO..."
+          sleep 2
+        done
+
+        echo "MinIO is ready."
+
+        mc mb local/documents --ignore-existing
+
+        echo "Bucket 'documents' is ready."
+
+# =============================================================================
+# Named volumes
+# =============================================================================
+
+volumes:
+  postgres_data:
+    name: enterprise-doc-intelligence_postgres_data
+
+  minio_data:
+    name: enterprise-doc-intelligence_minio_data
