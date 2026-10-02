@@ -1,0 +1,107 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# =========================
+# Testing / Coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# =========================
+# Ruff / Mypy / Type checking
+# =========================
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Model / ML caches
+# =========================
+.cache/
+.cache/huggingface/
+huggingface/
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# =========================
+# Local data
+# =========================
+data/private/
+data/raw/
+data/processed/
+data/uploads/
+data/tmp/
+
+# Ignore local PDFs/documents
+data/**/*.pdf
+data/**/*.docx
+data/**/*.xlsx
+data/**/*.csv
+
+# Keep evaluation and sample-document directories
+!data/sample_docs/
+!data/eval/
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# Docker
+# =========================
+docker-data/
+
+# =========================
+# OS files
+# =========================
+*.tmp
+*.temp
