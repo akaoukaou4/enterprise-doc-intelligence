@@ -16,6 +16,10 @@ def build_test_app() -> FastAPI:
     def boom():
         raise RuntimeError("something internal")
 
+    @app.get("/number")
+    def number(value: int):
+        return {"value": value}
+
     return app
 
 
@@ -37,3 +41,23 @@ def test_unhandled_error_returns_generic_500_without_leaking_details():
     body = response.json()
     assert body["error"]["code"] == "internal_error"
     assert "something internal" not in response.text
+
+
+def test_unknown_route_uses_error_shape():
+    client = TestClient(build_test_app())
+
+    response = client.get("/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_invalid_input_uses_error_shape():
+    client = TestClient(build_test_app())
+
+    response = client.get("/number", params={"value": "abc"})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_failed"
+    assert "value" in body["error"]["message"]
