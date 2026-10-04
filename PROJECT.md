@@ -1,213 +1,582 @@
 # Enterprise AI Document Intelligence Platform
 
-> **What this file is:** the description of the project: the idea, the purpose, the scope, the principles, and where it can grow. It is deliberately **not technical**.
-> **Where the technical details live:** in `ROADMAP.md` (stack decisions, phases, tasks, progress). Live status is tracked there, not here.
-> **Status:** V1, core implementation.
+## Project Definition
+
+**Enterprise AI Document Intelligence Platform** is an AI-powered internal knowledge assistant for companies.
+
+The platform allows employees to ask natural-language questions about company documents and receive answers grounded in those documents, with citations pointing to the relevant document and page.
+
+The project is designed as a realistic AI engineering system rather than a simple chatbot or a collection of disconnected technologies.
 
 ---
 
-## 1. The project in one paragraph
+## Primary Goal
 
-The **Enterprise AI Document Intelligence Platform** lets people upload their organization's documents (HR policies, security policies, technical documentation, handbooks, reports, procedures, contracts, any PDF) and then **ask questions in plain language**. The platform finds the relevant passages in the documents and writes an answer **based only on those passages**, and it **shows where the answer came from** (which document, which page). If the documents don't contain the answer, it says so instead of making something up.
+Build a practical AI-powered document intelligence platform that demonstrates the ability to:
 
----
+* ingest real-world PDF documents
+* understand and process their structure
+* create meaningful document chunks
+* generate semantic embeddings
+* store and retrieve document knowledge
+* use Retrieval-Augmented Generation (RAG)
+* generate grounded answers using Gemini
+* provide document and page citations
+* expose the system through an API
+* provide a simple user interface
+* run locally through Docker
+* later deploy the same application to AWS
 
-## 2. The problem it solves
-
-Every organization accumulates documents: policies, procedures, manuals, contracts. The knowledge is in there, but:
-
-- **Finding it takes time.** People open several PDFs and scan page after page for one answer.
-- **Keyword search is weak.** If you search for "vacation" but the policy says "annual leave", you may find nothing.
-- **Generic AI chatbots can't be trusted with company knowledge.** They don't know the organization's documents, and they can confidently invent answers.
-
-This platform answers questions **from the organization's own documents**, with **sources you can check**, and admits when it doesn't know.
-
-### A concrete example
-
-> **Question:** "How many days of notice do I need to give before taking annual leave?"
-> **Answer:** "Employees must request annual leave at least 14 days in advance through their manager. *(Source: HR_Policy.pdf, page 7)*"
->
-> **Question:** "What is the company's policy on pet insurance?"
-> **Answer:** "I couldn't find this in the uploaded documents."
-
-(The numbers and document names are illustrative.)
+The main objective is to learn and demonstrate **AI Engineering** through a complete, working system.
 
 ---
 
-## 3. What the platform does
+## Problem Being Solved
 
-From a user's point of view, there are three things:
+Companies often have large collections of internal documents such as:
 
-1. **Upload documents.** Add PDFs and see when each one is ready to be used.
-2. **Ask questions.** Type a question in everyday language, in the language of the documents.
-3. **Get a trustworthy answer.** Read a clear answer together with the **sources** it came from, so it can be verified, and a clear "not found" when the documents don't cover the question.
+* policies
+* procedures
+* technical documentation
+* manuals
+* reports
+* guidelines
+* internal knowledge documents
 
----
+Employees may waste time searching through these documents to find specific information.
 
-## 4. How it works, in simple words
+This platform provides a natural-language interface where an employee can ask a question instead of manually searching through documents.
 
-The platform follows the same logic a careful person would use:
+Example:
 
 ```text
-Documents                              A question
-   │                                       │
-   ▼                                       ▼
-1. Read each document, page by page    4. Understand what the question means
-2. Cut it into small readable pieces   5. Find the pieces whose meaning is closest
-3. Capture the meaning of each piece   6. Give only those pieces to the AI
-   and store it                        7. The AI writes an answer from them
-                                       8. Show the answer and its sources
+Employee:
+"What is the procedure for handling an incident?"
+
+System:
+1. Searches relevant company documents.
+2. Retrieves the most relevant sections.
+3. Sends the retrieved context to Gemini.
+4. Generates an answer grounded in that context.
+5. Shows the source document and page.
 ```
 
-The key idea is that the AI is **not asked to remember everything**. It is handed only the few passages that matter for this particular question, and told to answer from them alone. This approach is called **RAG** (Retrieval-Augmented Generation). It is what makes the answers grounded and checkable.
+The system should prefer saying that the information is not found rather than confidently generating unsupported information.
 
 ---
 
-## 5. Who it is for
+## Core User Flow
 
-- **Employees and teams** who need quick, reliable answers from internal documents.
-- **HR, IT, security and compliance people** whose policies are asked about over and over.
-- **The project owner's learning and portfolio goals:** this is also a demonstration project (see section 7) that shows real engineering skills to teachers, recruiters and interviewers.
+### Document ingestion
 
----
+```text
+PDF
+ ↓
+Document extraction
+ ↓
+Cleaning
+ ↓
+Structured chunking
+ ↓
+Embedding generation
+ ↓
+Vector storage
+```
 
-## 6. Core idea and philosophy
+### Question answering
 
-- This is **not** a machine-learning training project. We do **not** train models. We **use existing AI models** and build a useful application around them.
-- The guiding chain is: **Data → Retrieval → AI → Backend → Cloud.**
-- The AI model is **one component** of a larger system. The real learning is in connecting it properly: getting the data in, finding the right information, building a reliable service around it, and putting it online.
-- A good answer depends more on **good data handling and good retrieval** than on the AI model alone.
-
----
-
-## 7. What this project is meant to demonstrate
-
-**Data engineering:** taking in unstructured documents, building a processing pipeline, storing files and information, orchestrating the work, searching by meaning.
-
-**AI / GenAI engineering:** using existing AI models through their interfaces, understanding retrieval-augmented generation, constructing prompts, grounding answers in real data, returning citations, and understanding what AI models can and cannot do (including making things up, usage limits, and untrusted text).
-
-**Backend engineering:** building a clean, validated, well-structured service that connects storage, search and AI, and handles errors gracefully.
-
-**Cloud:** understanding cloud storage and deployment, running the application online, and being aware of cost.
-
-**Software engineering:** version control, reproducible environments with containers, configuration and secrets handled safely, tests, project structure and documentation.
-
----
-
-## 8. Guiding principles
-
-1. **Do not over-engineer V1.** This is a student project: it must be **simple enough to finish**. A working, understandable V1 beats an impressive, unfinished one.
-2. **Every technology must earn its place.** We add a tool only when it solves a real problem in the project, never because it looks good on a CV. Examples of things deliberately **left out**: Kubernetes, Kafka, Terraform, agent frameworks, microservices, advanced monitoring, complex authentication, custom model training.
-3. **Grounded or silent.** An answer must come from the documents and show its sources. When the documents don't contain the answer, the platform says so.
-4. **Honest about limits.** What doesn't work yet (and why) is written down, not hidden.
-5. **Understand, don't just copy.** The owner is a student who wants to understand every step: what each part does, why it was chosen, and what the trade-offs are.
-6. **Low cost by design.** The project is built to run on free or low-cost services, and we stay aware of usage limits and cloud costs.
-7. **One phase at a time.** Each phase has a clear definition of "done", and we finish it before moving on.
+```text
+User question
+ ↓
+Query embedding
+ ↓
+Vector similarity search
+ ↓
+Relevant chunks
+ ↓
+Context construction
+ ↓
+Gemini
+ ↓
+Grounded answer
+ ↓
+Source/page citations
+```
 
 ---
 
-## 9. V1 scope
+## V1 Scope
 
-### Included in V1
+V1 focuses on one strong end-to-end workflow:
 
-- Uploading, listing and deleting PDF documents, with a clear processing status for each
-- Turning documents into searchable knowledge, page by page, so sources can name the page
-- Asking questions and getting **grounded answers with citations**
-- A clear **"not found in the documents"** behavior, and friendly handling of usage limits
-- A **simple web interface** so a non-technical person can use it without any developer tools
-- Automated processing of uploaded documents
-- Tests, a one-command way to run the whole system, and deployment online
-- Clear documentation of the project, its decisions and its limits
+> **Upload documents → process documents → retrieve relevant knowledge → answer questions with citations.**
 
-### Not included in V1
+### Included
 
-Reading scanned/image-only PDFs (no OCR), file types other than PDF, user accounts and per-user permissions, conversation memory (each question stands alone), live "typing" answers, advanced search techniques, multiple organizations, advanced monitoring, and anything involving training AI models.
+* PDF document upload
+* Object storage
+* PDF/document parsing with Docling
+* structured chunking with HybridChunker
+* useful document/chunk metadata
+* EmbeddingGemma embeddings
+* PostgreSQL
+* pgvector
+* semantic vector retrieval
+* Gemini API
+* RAG
+* source/page citations
+* FastAPI backend
+* simple Streamlit interface
+* Docker-based local environment
+* Airflow orchestration
+* automated tests
+* basic evaluation of retrieval and answer quality
 
----
+### Not part of V1
 
-## 10. What "V1 is done" looks like
+The following should not be added unless a real requirement appears:
 
-V1 is complete when all of this is true:
+* custom model training
+* fine-tuning
+* local LLM serving
+* multi-agent systems
+* autonomous agents
+* microservices
+* Kubernetes
+* Kafka
+* complex authentication systems
+* elaborate frontend development
+* complex event-driven architecture
+* unnecessary AWS services
+* advanced ML models unrelated to the core product
 
-- A user can upload a PDF, wait until it is ready, ask a question in the web interface, and receive an answer **with its sources**.
-- Questions the documents can't answer get an honest "not found" instead of an invented answer.
-- If the AI service's free usage limit is reached, the user sees a clear, friendly message instead of a crash.
-- The documents are processed automatically after upload.
-- The project's tests pass, and the whole system starts with one command on a fresh machine.
-- The application is reachable online, with its running cost under control.
-- Anyone who has never seen the project can understand it, run it and judge it from its documentation in about five minutes.
-
----
-
-## 11. Known limitations of V1
-
-These are accepted on purpose and will be documented honestly:
-
-- **Scanned documents** (pages that are just pictures of text) are detected but not read.
-- **Complex layouts and tables** in PDFs may not be read perfectly.
-- **Answers are only as good as the search step.** If the right passage isn't found, the answer will be incomplete or "not found".
-- **Each passage is small**, so the AI sees limited surrounding context.
-- **Free AI usage has limits:** a small number of questions per day, sometimes slow responses, and the provider may use free-tier inputs to improve its products. That is why **only public or sample documents are used during development**.
-- **Each question stands alone:** no follow-up conversation memory.
-- **Light protection only:** V1 is a demonstration, not a hardened enterprise product.
-
----
-
-## 12. Where the project can grow (not part of V1)
-
-These are ideas for later versions. V1 is built so they can be added without starting over, but **none of them should be built now**.
-
-### Version 2 ideas: making it better
-
-| Idea | Benefit |
-|------|---------|
-| A stronger search/understanding model | Finds the right passages more reliably |
-| Combining meaning-based and keyword search, plus re-ranking results | Better precision, especially for exact terms and numbers |
-| A stronger or higher-capacity AI model | Better answers and no daily free-usage limit |
-| Giving the AI more surrounding text for each passage | Fuller, more accurate answers |
-| Reading scanned documents (OCR) | Works on scanned PDFs |
-| More document types (Word, web pages, text) | Broader usefulness |
-| User accounts and per-user access to documents | Safe for real teams |
-| Conversation memory and follow-up questions | More natural use |
-| Answers that appear as they are written | Better experience |
-| Automatic measurement of answer quality | Proof that changes improve things |
-| A more polished web interface | Production-grade look and feel |
-| A managed database and automated deployment and monitoring | Less manual work, more reliability |
-
-### Version 3 ideas: going further
-
-Multiple organizations using the same platform, AI "agents" that carry out multi-step tasks, infrastructure defined as code, large-scale deployment tooling, advanced monitoring, quality dashboards, and fine-tuning. These only make sense **when a real problem demands them**.
+Future ideas may be documented separately, but they should not complicate V1.
 
 ---
 
-## 13. Context and constraints
+## Core Technology Stack
 
-- **It is a student project:** realistic, finishable, and focused on learning.
-- **Low budget:** free tiers and limited cloud credits shape the choices. The cloud account is created only when it is needed, because the free credits last a limited time.
-- **Responsible data use:** because free AI services may use inputs to improve their products, only public or sample documents are used while developing.
-- **Honesty over polish:** limitations, trade-offs and measured results are documented, since they show engineering maturity.
+### AI
+
+* Gemini API — answer generation
+* EmbeddingGemma — document and query embeddings
+* RAG — grounding answers in company documents
+
+### Document Processing
+
+* Docling — document/PDF understanding and extraction
+* HybridChunker — structure-aware chunking
+
+### Backend
+
+* Python
+* FastAPI
+* Pydantic
+
+### Data
+
+* PostgreSQL
+* pgvector
+
+### Storage
+
+Local:
+
+* MinIO
+
+AWS:
+
+* Amazon S3
+
+### Orchestration
+
+* Apache Airflow
+
+Airflow is responsible for orchestrating the document-processing workflow.
+
+The actual processing logic must remain independent Python code.
+
+### Infrastructure
+
+Local:
+
+* Docker
+* Docker Compose
+
+AWS:
+
+* EC2
+* RDS PostgreSQL
+* S3
+* IAM
+* CloudWatch
+
+Infrastructure as Code:
+
+* Terraform
+
+### Interface
+
+* Streamlit
+
+The interface should remain intentionally simple. The project is primarily an AI/backend engineering project, not a frontend project.
 
 ---
 
-## 14. How we work (for the owner and for any AI assistant)
+## Architecture Philosophy
 
-1. **Start by reading** this file (the "what and why") and then `ROADMAP.md` (the "how and when") to know the current phase.
-2. **One phase at a time.** Never pull Version 2 or 3 ideas into V1.
-3. **Do not add tools or technologies** that are not already in the roadmap's decisions. If something new seems needed, explain the problem it solves and **ask the owner first**.
-4. **Do not silently change a decision.** Propose it, get approval, then update the roadmap (and this file if the vision or scope changes).
-5. **Verify facts that change quickly** (AI model names, free-usage limits, cloud prices and rules) instead of relying on memory, and **never invent** facts, numbers or sources.
-6. **Be honest** about what doesn't work, what is untested and what is a known limitation.
-7. **Teach while building:** explain new terms and trade-offs simply, and prefer the simplest thing that works.
-8. **When something is unclear, ask one focused question**, especially before anything expensive or hard to undo.
-9. **Keep each document in its role** (see section 15). Don't copy content from one file into another; link to it instead.
+The application uses a **modular monolith**.
+
+The goal is to keep the system simple enough for one developer to understand while maintaining clear internal boundaries.
+
+Conceptually:
+
+```text
+                    USER
+                      │
+                      ▼
+                Streamlit UI
+                      │
+                      ▼
+                 FastAPI API
+                      │
+          ┌───────────┼───────────┐
+          │           │           │
+          ▼           ▼           ▼
+       Storage      Database      AI
+          │           │           │
+          ▼           ▼           ▼
+        S3/MinIO   PostgreSQL   Gemini
+                    + pgvector
+```
+
+The internal application is divided by responsibility rather than deployed as separate services.
 
 ---
 
-## 15. Where things live
+## Repository Structure
 
-| Document | Its purpose |
-|----------|-------------|
-| **`PROJECT.md`** (this file) | The idea: what we are building, why, for whom, what is in and out of scope, the principles, and where it can grow. Non-technical and stable. |
-| **`ROADMAP.md`** | The execution: technology decisions and the reasons behind them, the phases from environment setup to the end of V1, task checklists, definitions of done, progress, changelog and open questions. Updated every work session. |
-| **`README.md`** *(written at the end)* | The public face: how to run the project, its architecture diagram and a quick demo. |
-| **`docs/`** *(grows as we build)* | Supporting notes: measured results, limitations, deployment steps, provider limits, decisions. |
+The project should follow clear boundaries:
+
+```text
+app/
+├── api/
+├── core/
+├── db/
+├── services/
+├── pipeline/
+└── schemas/
+```
+
+### `app/api/`
+
+Contains FastAPI routes and HTTP-level concerns.
+
+Examples:
+
+* document endpoints
+* question/ask endpoint
+* health endpoint
+
+### `app/services/`
+
+Contains application services and integrations.
+
+Examples:
+
+* storage service
+* embedding service
+* LLM service
+* retrieval service
+* RAG service
+
+### `app/pipeline/`
+
+Contains the document-processing logic.
+
+The pipeline should remain independent from FastAPI and Airflow.
+
+Example:
+
+```text
+extract
+   ↓
+clean
+   ↓
+chunk
+   ↓
+embed
+   ↓
+store
+```
+
+### `app/db/`
+
+Contains:
+
+* database models
+* database session management
+* repositories
+* database-related logic
+
+### `app/schemas/`
+
+Contains Pydantic models used for API requests and responses.
+
+---
+
+## Document Processing
+
+The document-processing pipeline uses:
+
+```text
+PDF
+ ↓
+Docling
+ ↓
+Structured document representation
+ ↓
+HybridChunker
+ ↓
+Chunks + useful metadata
+ ↓
+EmbeddingGemma
+ ↓
+768-dimensional vectors
+ ↓
+PostgreSQL + pgvector
+```
+
+The system should preserve useful provenance information alongside each chunk.
+
+Conceptually:
+
+```text
+Chunk
+├── text
+├── document_id
+├── page_number
+├── section / heading
+├── useful document metadata
+└── embedding
+```
+
+The exact metadata schema should be based on the information actually available from the document-processing libraries rather than inventing unnecessary fields.
+
+---
+
+## RAG System
+
+The initial RAG implementation uses dense vector retrieval.
+
+```text
+Question
+ ↓
+EmbeddingGemma
+ ↓
+Query vector
+ ↓
+pgvector similarity search
+ ↓
+Top relevant chunks
+ ↓
+Context
+ ↓
+Gemini
+ ↓
+Answer + citations
+```
+
+The initial system should prioritize correctness, simplicity, and explainability.
+
+More advanced retrieval techniques such as:
+
+* hybrid keyword/vector retrieval
+* reranking
+* query expansion
+
+should only be introduced if evaluation demonstrates that the initial retrieval approach is insufficient.
+
+---
+
+## Airflow
+
+Airflow is used as an orchestration layer for document processing.
+
+It does **not** contain the core processing logic.
+
+Conceptually:
+
+```text
+Airflow
+   │
+   ├── extract task
+   ├── clean task
+   ├── chunk task
+   ├── embed task
+   └── store task
+```
+
+The underlying Python functions remain independently executable.
+
+This allows development and testing without requiring Airflow to be running.
+
+The architectural principle is:
+
+> **Pipeline logic should not depend on the orchestration system.**
+
+Airflow manages workflow execution; Python code performs the actual work.
+
+---
+
+## Local Environment
+
+The initial development environment runs locally using Docker Compose.
+
+Target local infrastructure:
+
+```text
+Docker Compose
+│
+├── FastAPI
+├── Streamlit
+├── PostgreSQL + pgvector
+├── MinIO
+└── Airflow
+```
+
+MinIO provides an S3-compatible object-storage interface during local development.
+
+This allows the application to use an S3-style storage abstraction before moving to AWS.
+
+---
+
+## AWS Deployment
+
+The application should later be deployed to AWS without redesigning the application.
+
+Target mapping:
+
+```text
+Local                     AWS
+────────────────────────────────────
+MinIO                 →   S3
+PostgreSQL + pgvector →   RDS PostgreSQL
+FastAPI               →   EC2
+Streamlit             →   EC2
+Docker                →   Docker
+Environment config    →   AWS configuration
+```
+
+Supporting services:
+
+```text
+IAM
+CloudWatch
+Terraform
+```
+
+AWS is treated as the deployment environment rather than the product itself.
+
+The project should avoid adding AWS services simply to increase the number of technologies used.
+
+---
+
+## Portability Principle
+
+The application should be built so that the core application logic does not depend on a specific environment.
+
+For example:
+
+```text
+Local:
+Storage → MinIO
+
+AWS:
+Storage → S3
+```
+
+The application should interact with a storage abstraction rather than spreading MinIO- or S3-specific logic throughout the codebase.
+
+The same principle applies to configuration and database connectivity.
+
+The goal is:
+
+> **Build the application correctly once, containerize it, and deploy the same application to AWS with environment-specific configuration.**
+
+---
+
+## Evaluation
+
+The project must not rely only on whether the application appears to work.
+
+The RAG system should eventually have a small evaluation dataset containing:
+
+```text
+Question
+Expected information
+Expected source/page
+```
+
+Evaluation should help determine:
+
+* whether retrieval finds the correct chunks
+* whether the answer is grounded in retrieved context
+* whether citations point to the correct source
+* where the system fails
+
+Advanced retrieval techniques should be introduced only when evaluation provides a reason to use them.
+
+---
+
+## Engineering Constraints
+
+The project should follow these constraints:
+
+1. AI Engineering is the center of the system.
+2. Every technology must have a clear purpose.
+3. Avoid overengineering.
+4. Prefer simple production-oriented solutions.
+5. Keep processing logic independently testable.
+6. Preserve document provenance.
+7. Evaluate before adding advanced retrieval techniques.
+8. Keep local development practical on the available hardware.
+9. Keep the application portable between local infrastructure and AWS.
+10. Do not add technologies only for CV keywords.
+11. Prefer understanding a smaller system deeply over building a larger system superficially.
+
+---
+
+## Definition of Done
+
+V1 is considered complete when a user can:
+
+1. Start the system locally.
+2. Upload a PDF.
+3. Store the document.
+4. Process the document through the ingestion pipeline.
+5. Generate embeddings.
+6. Store chunks and embeddings in PostgreSQL/pgvector.
+7. Ask a natural-language question.
+8. Retrieve relevant document chunks.
+9. Generate a grounded answer through Gemini.
+10. See the source document and page citation.
+11. Run the application through Docker.
+12. Run the main tests successfully.
+13. Evaluate the basic RAG quality using a small evaluation dataset.
+14. Understand and explain the major architectural and technology decisions.
+
+The project is not considered complete merely because the code runs.
+
+The owner should be able to explain:
+
+* why each major technology was chosen
+* how the document pipeline works
+* how embeddings work
+* how vector retrieval works
+* how RAG works
+* how citations are produced
+* why Airflow is separated from pipeline logic
+* how local infrastructure maps to AWS
+* what the system's limitations are
+* how the system could be improved

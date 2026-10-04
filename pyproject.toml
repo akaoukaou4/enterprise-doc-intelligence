@@ -1,7 +1,7 @@
 [project]
 name = "enterprise-doc-intelligence"
 version = "0.1.0"
-description = "Enterprise document intelligence platform with RAG, risk analysis, and audit prioritization"
+description = "Enterprise document intelligence platform with RAG and cited answers"
 readme = "README.md"
 authors = [
     { name = "akaoukaou", email = "ayoubkoukaou07@gmail.com" }
