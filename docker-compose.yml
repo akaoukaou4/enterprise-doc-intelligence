@@ -1,5 +1,5 @@
 # =============================================================================
-# Enterprise Document Intelligence — Local Infrastructure
+# Enterprise Document Intelligence - Local Infrastructure
 # Services: PostgreSQL + pgvector, MinIO
 # MinIO initialization: one-time bucket creation via MinIO Client
 # =============================================================================
@@ -34,7 +34,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # MinIO — local S3-compatible object storage
+  # MinIO - local S3-compatible object storage
   # ---------------------------------------------------------------------------
   minio:
     image: ghcr.io/coollabsio/minio:latest
@@ -64,8 +64,8 @@ services:
   # ---------------------------------------------------------------------------
   # MinIO initialization / readiness check
   #
-  # This container waits until MinIO accepts S3 connections,
-  # then creates the application bucket.
+  # Waits until MinIO accepts S3 connections, then creates the application
+  # bucket if it does not already exist.
   # ---------------------------------------------------------------------------
   minio-init:
     image: pgsty/mc:latest
@@ -87,14 +87,13 @@ services:
 
         echo "MinIO is ready."
 
-        mc mb local/documents --ignore-existing
+        mc mb --ignore-existing local/documents
 
         echo "Bucket 'documents' is ready."
 
 # =============================================================================
-# Named volumes
+# Persistent volumes
 # =============================================================================
-
 volumes:
   postgres_data:
     name: enterprise-doc-intelligence_postgres_data
