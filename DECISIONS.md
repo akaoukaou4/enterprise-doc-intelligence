@@ -477,7 +477,117 @@ The project should evolve based on evidence rather than technology trends.
 
 ---
 
-# 9. Core Decision Rule
+# 9. Backend Application Decisions (Phase 1)
+
+## 9.1 Typed Configuration With pydantic-settings
+
+**Decision:**
+All configuration is read into one typed `Settings` object from environment variables and `.env` (`app/core/config.py`). Settings are created once and cached.
+
+**Why:**
+
+* Implements decision 7.2 in practice: nothing environment-specific is hardcoded.
+* Values are validated and typed at startup.
+* Environment variable names follow the `.env` convention (`APP_ENV`, `LOG_LEVEL`, `DATABASE_URL`).
+* Unknown variables are ignored, and each setting is added only when a phase needs it.
+
+---
+
+## 9.2 Use an Application Factory
+
+**Decision:**
+The FastAPI app is built by `create_app()` instead of being assembled at import time.
+
+**Why:**
+
+* Tests can build their own isolated app instances.
+* Setup (logging, error handlers, routers) happens in one visible place.
+* Keeps import-time side effects minimal.
+
+---
+
+## 9.3 Use Standard-Library Logging
+
+**Decision:**
+Logging uses Python's built-in `logging` module, configured once in `app/core/logging.py`. The level comes from `LOG_LEVEL`.
+
+**Why:**
+
+* Every module only needs `logging.getLogger(__name__)`.
+* No extra dependency is needed for the project's current scale.
+* Logging is essential later for debugging which RAG stage failed.
+
+Structured (JSON) logging may be reconsidered for production if there is a real need.
+
+---
+
+## 9.4 One JSON Error Shape
+
+**Decision:**
+Every error response uses `{"error": {"code": "...", "message": "..."}}`. Expected failures raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`). FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server.
+
+**Why:**
+
+* A UI or client handles one error format.
+* Routes do not need their own try/except blocks.
+* Exception text can leak internals (paths, SQL, secrets), so it is not sent to clients.
+
+---
+
+## 9.5 Versioned API Prefix; Operational Endpoints Unversioned
+
+**Decision:**
+Business endpoints live under `/api/v1`. Operational endpoints (`/health`, `/health/db`) stay at the root.
+
+**Why:**
+
+* A stable URL prefix is cheap now and expensive to change once a UI depends on it.
+* Health checks are for infrastructure (Docker, AWS), not API consumers, and should not change with API versions.
+
+---
+
+## 9.6 Thin Routes, Logic in Services
+
+**Decision:**
+Routes handle HTTP only. Application logic lives in services (`app/services/`), which are provided to routes through FastAPI dependencies. `InfoService` is the minimal example of the pattern.
+
+**Why:**
+
+* Implements the API-layer rule in ARCHITECTURE.md: no business logic inside route functions.
+* Logic can be tested without HTTP.
+* Services and pipeline code can be reused by Airflow later.
+
+No base classes or generic abstractions are used until a real need appears.
+
+---
+
+## 9.7 Optional Database URL and Lazy Engine
+
+**Decision:**
+`DATABASE_URL` is optional in `Settings`. The SQLAlchemy engine is created on first use, with `pool_pre_ping` enabled. Database health is a separate endpoint (`/health/db`) from basic liveness (`/health`).
+
+**Why:**
+
+* CI and unit tests have no `.env` and no database, so they must still run.
+* Code that needs the database fails with a clear message instead of a crash at import time.
+* `pool_pre_ping` lets the app recover on its own after the database restarts, which was verified by stopping and starting the Postgres container.
+* Liveness (the process is up) and readiness (its dependencies work) are different questions.
+
+---
+
+## 9.8 Test With Dependency Overrides
+
+**Decision:**
+Unit tests replace dependencies such as `get_db` with fakes using FastAPI's `dependency_overrides`. Tests that need a real PostgreSQL are integration tests (`tests/integration/`), added when Phase 2 needs them.
+
+**Why:**
+
+* Unit tests stay fast and run anywhere, including CI.
+* Error handling can be tested deterministically (for example a simulated database outage).
+
+---
+
+# 10. Core Decision Rule
 
 When considering a new technology, feature, or architectural change, ask:
 

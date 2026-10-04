@@ -55,6 +55,8 @@ The main application is responsible for coordinating these components.
 
 ## 3. Repository Architecture
 
+Target structure:
+
 ```text
 enterprise-doc-intelligence/
 │
@@ -99,6 +101,33 @@ enterprise-doc-intelligence/
 Each directory should have a clear responsibility.
 
 New directories should only be introduced when a real requirement appears.
+
+### Implemented so far (end of Phase 1)
+
+```text
+app/
+├── main.py            # create_app() application factory
+├── api/
+│   ├── deps.py        # shared FastAPI dependencies (DbSession, services)
+│   ├── health.py      # /health, /health/db
+│   └── v1/
+│       ├── router.py  # /api/v1 router
+│       └── info.py    # /api/v1/info (example route → service)
+├── core/
+│   ├── config.py      # typed settings (pydantic-settings)
+│   ├── logging.py     # centralized logging setup
+│   └── errors.py      # exceptions and error handlers
+├── db/
+│   └── session.py     # SQLAlchemy engine, session factory, get_db
+├── services/
+│   └── info.py        # example application service
+└── schemas/
+    ├── health.py
+    ├── errors.py
+    └── info.py
+```
+
+`app/pipeline/` is not created yet. It arrives in Phase 3.
 
 ---
 
@@ -187,6 +216,20 @@ Pipeline / AI / database services
 ```
 
 This keeps the system easier to test and maintain.
+
+### Current endpoints
+
+```text
+GET /health          liveness: the process is up
+GET /health/db       readiness: the database is reachable
+GET /api/v1/info     example route → service (app name, version, environment)
+```
+
+### Conventions
+
+* **Versioning:** business endpoints live under `/api/v1`. Operational endpoints (`/health`, `/health/db`) stay at the root so infrastructure checks do not change with API versions.
+* **Dependency injection:** services and database sessions are provided to routes through FastAPI dependencies defined in `app/api/deps.py`. Routes receive a ready-to-use service and call it.
+* **Errors:** every error response has one shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`) and the registered handlers convert them to HTTP responses. FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server, so internals are never leaked to clients.
 
 ---
 
@@ -299,6 +342,10 @@ pgvector provides vector similarity search.
 The initial retrieval strategy uses dense vector similarity.
 
 The system should avoid introducing a separate vector database unless PostgreSQL/pgvector becomes insufficient for a demonstrated requirement.
+
+### Connection handling
+
+The SQLAlchemy engine is created lazily in `app/db/session.py` with `pool_pre_ping` enabled, so the app starts without a database and recovers by itself after the database restarts. Routes get one session per request through the `get_db` dependency, and the session is always closed afterwards. `DATABASE_URL` is optional in the settings so tests and CI can run without a database.
 
 ---
 
@@ -606,6 +653,8 @@ EmbeddingGemma may run locally for embedding generation.
 
 The exact containerization strategy for the embedding component can be decided during implementation based on resource usage and development practicality.
 
+Currently, Docker Compose runs PostgreSQL + pgvector and MinIO. The API runs on the host with `uvicorn`. Containerizing the application comes in Phase 11.
+
 ---
 
 # 17. AWS Deployment Architecture
@@ -671,6 +720,8 @@ Environment-specific values should not be hardcoded into application logic.
 
 Secrets and configuration should be supplied through environment variables or appropriate deployment configuration.
 
+In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them.
+
 ---
 
 # 19. Testing Architecture
@@ -695,6 +746,8 @@ Examples:
 * retrieval logic
 * citation formatting
 
+Unit tests replace dependencies (for example `get_db`) with fakes using FastAPI's `dependency_overrides`, so they run fast, need no database, and work in CI.
+
 ### Integration tests
 
 Test interactions between components.
@@ -706,6 +759,8 @@ Examples:
 * document ingestion
 * retrieval pipeline
 * API endpoints
+
+Integration tests need real services and are added from Phase 2 onward.
 
 The test strategy should remain proportional to the project's size.
 

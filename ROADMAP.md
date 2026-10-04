@@ -104,29 +104,38 @@ The project can be cloned and the development environment can be initialized con
 
 # Phase 1 — FastAPI Application Foundation
 
+### Status
+
+**Complete**
+
 ### Objective
 
 Create the backend application and establish the basic application structure.
 
-### Build
+### Completed
 
-* FastAPI application
-* configuration management
-* logging
-* health endpoint
-* API structure
+* FastAPI application factory (`create_app()`)
+* configuration management with `pydantic-settings` (`.env` and environment variables)
+* centralized logging
+* `/health` endpoint
+* `/health/db` readiness endpoint (checks the PostgreSQL connection)
+* versioned API router (`/api/v1`)
 * Pydantic schemas
-* basic service structure
-* database session foundation
-* error handling foundation
+* service layer skeleton (route → service pattern, example `InfoService` and `/api/v1/info`)
+* SQLAlchemy engine, session factory, and `get_db` dependency
+* unified error handling (custom exceptions, one JSON error shape, no leaked internals)
+* unit tests, Ruff, pre-commit, and green GitHub Actions CI
 
-### Expected result
+### Result
 
 ```text
 FastAPI
    │
    ├── /health
+   ├── /health/db
+   ├── /api/v1/info
    └── application structure ready
+        (config, logging, errors, services, DB session)
 ```
 
 ### Learning focus
@@ -141,9 +150,15 @@ FastAPI
 
 The API starts successfully and basic tests pass.
 
+**Met:** the API starts, `/health/db` was verified against the real PostgreSQL container (including an outage and recovery test), 13 tests pass, and CI is green.
+
 ---
 
 # Phase 2 — Database and Object Storage
+
+### Status
+
+**Next**
 
 ### Objective
 
