@@ -10,7 +10,11 @@ class Settings(BaseSettings):
     debug: bool = False  # reads DEBUG
     log_level: str = "INFO"  # reads LOG_LEVEL
 
-    # extra="ignore": .env also holds DATABASE_URL, MINIO_*, etc.
+    # reads DATABASE_URL. Optional so the app and tests can start without
+    # a database (e.g. in CI); code that needs it fails with a clear message.
+    database_url: str | None = None
+
+    # extra="ignore": .env also holds MINIO_*, etc.
     # We model them as each phase needs them.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
