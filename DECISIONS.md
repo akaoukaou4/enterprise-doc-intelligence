@@ -578,7 +578,7 @@ No base classes or generic abstractions are used until a real need appears.
 ## 9.8 Test With Dependency Overrides
 
 **Decision:**
-Unit tests replace dependencies such as `get_db` with fakes using FastAPI's `dependency_overrides`. Tests that need a real PostgreSQL are integration tests (`tests/integration/`), added when Phase 2 needs them.
+Unit tests replace dependencies such as `get_db` with fakes using FastAPI's `dependency_overrides`. Tests that need a real PostgreSQL are integration tests (`tests/integration/`), added in Phase 2 (see 10.8).
 
 **Why:**
 
@@ -587,7 +587,126 @@ Unit tests replace dependencies such as `get_db` with fakes using FastAPI's `dep
 
 ---
 
-# 10. Core Decision Rule
+# 10. Data and Storage Application Decisions (Phase 2)
+
+## 10.1 Use boto3 for Object Storage
+
+**Decision:**
+Object storage is accessed through `boto3` (the S3 API), not the `minio` SDK. MinIO implements the S3 API, so the same code talks to MinIO locally and Amazon S3 on AWS. When `MINIO_ENDPOINT` is set, boto3 uses it; when it is not set, boto3 talks to real S3 with its default credential chain (an IAM role on EC2).
+
+**Why:**
+
+* Implements decisions 5.2 and 7.1 with configuration only: no provider-specific branches in the code.
+* The local environment exercises the same API that AWS will use.
+* No extra abstraction layer is needed (see 10.4).
+
+The `MINIO_*` variable names match the Docker Compose file and are kept for now. They may be renamed to neutral `S3_*` names in Phase 12 if that reads better.
+
+Trade-off: if `.env` is missing locally, boto3 would try real AWS instead of failing loudly, so `.env` must be filled in.
+
+---
+
+## 10.2 Alembic for Schema Changes
+
+**Decision:**
+Database schema changes are versioned Alembic migrations in `migrations/`, not `Base.metadata.create_all()`. `migrations/env.py` takes the database URL from `Settings`, so `alembic.ini` holds no real URL or password. Generated files in `migrations/versions/` are excluded from Ruff, and every generated migration is read before it is applied.
+
+**Why:**
+
+* `create_all` can create tables but cannot alter them. Later phases need `document_chunks`, a `vector(768)` column, and `CREATE EXTENSION vector`.
+* The same migration history will run against RDS in Phase 12.
+* One source of truth for configuration (`.env` / environment), as in decision 7.2.
+* Autogenerate is a draft, not a guarantee: it targets old-style typing and long lines that the lint rules reject, and hand-editing every future migration would be wasted effort.
+
+The `CREATE EXTENSION vector` migration is deferred to Phase 4, when pgvector is first needed.
+
+---
+
+## 10.3 Document Model Choices
+
+**Decision:**
+The `documents` table uses a UUID primary key generated in Python, a unique `storage_key`, and a `status` column stored as a plain string (`uploaded`, `processing`, `processed`, `failed`) rather than a PostgreSQL ENUM. No columns are added before a phase needs them.
+
+**Why:**
+
+* The upload code needs the document ID before the insert, to build the storage key.
+* UUIDs cannot be guessed from the URL, unlike sequential integers.
+* ENUM types are awkward to change in migrations; the application enforces the allowed values.
+* Phase 3 will show which extra fields (for example an error message or page count) are really needed.
+
+---
+
+## 10.4 A Small Storage Service
+
+**Decision:**
+`StorageService` (`app/services/storage.py`) has three methods: `upload`, `download`, `delete`. It is the only code that imports boto3. It works with `bytes`, builds its client lazily and caches it, and maps boto3 errors to `NotFoundError` (missing key) and `ExternalServiceError` (anything else). The application does not create the bucket; the `minio-init` container in Docker Compose does.
+
+**Why:**
+
+* Abstract real variation, not imaginary future variation (ENGINEERING_PRINCIPLES 14): no interface class or plugin system.
+* Routes and the pipeline never see boto3 exceptions.
+* The lazy client lets the app and CI start without storage settings.
+* Passing the client in the constructor lets unit tests use a fake with no network.
+
+Limitation: files are handled as `bytes` in memory. This is acceptable with a 20 MB upload limit; streaming is a future improvement if file sizes require it.
+
+---
+
+## 10.5 Upload Order: Validate, Store the File, Then Insert the Row
+
+**Decision:**
+`DocumentService.create` validates the file, uploads it to storage, then inserts the database row. If the insert fails, it rolls back and deletes the uploaded file (best effort). If the upload fails, no row is created.
+
+**Why:**
+
+* A row that points to a missing file is worse than a stored file without a row.
+* Cleanup keeps storage and database consistent in the common failure cases.
+* The cleanup path is verified against real services by an integration test.
+
+Known limit: if the process crashes between the two steps, an orphaned file can remain. A periodic cleanup job is not justified at the current scale.
+
+---
+
+## 10.6 Upload Validation and Storage Keys
+
+**Decision:**
+An upload is accepted only if its content type is `application/pdf`, its bytes start with `%PDF-`, it is not empty, and it is within `MAX_UPLOAD_MB` (default 20). The storage key is `documents/<document_id>/<filename>`, where the filename is reduced to its last path component and limited to 255 characters. `storage_key` is internal and is not returned by the API.
+
+**Why:**
+
+* A client can lie about the content type, so the file itself is checked.
+* The UUID in the key prevents collisions when two people upload `policy.pdf`, and keeps the original name readable in MinIO.
+* Browsers can send full paths, which must not become part of the key.
+* Hiding `storage_key` keeps storage details out of the API contract.
+
+---
+
+## 10.7 Document Endpoints
+
+**Decision:**
+`POST /api/v1/documents` stores a PDF and returns its metadata (`201`). `GET /api/v1/documents/{id}` returns the metadata of one document. Both follow the thin-route rule (9.6). Multipart uploads need the `python-multipart` package.
+
+**Why:**
+
+* Completes the Phase 2 exit condition through the real API.
+* The GET endpoint costs almost nothing and lets us verify stored rows.
+
+---
+
+## 10.8 Integration Tests Skip When Services Are Unavailable
+
+**Decision:**
+Tests in `tests/integration/` use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable. Each test removes only the rows and files it created.
+
+**Why:**
+
+* CI has neither service and must stay green; unit tests with fakes cover the logic there.
+* Fakes cannot catch wrong column types, a broken unique constraint, or bad storage keys. Integration tests can.
+* Cleaning only what a test created keeps real local data safe.
+
+---
+
+# 11. Core Decision Rule
 
 When considering a new technology, feature, or architectural change, ask:
 

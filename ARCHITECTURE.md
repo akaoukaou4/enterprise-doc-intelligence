@@ -102,7 +102,7 @@ Each directory should have a clear responsibility.
 
 New directories should only be introduced when a real requirement appears.
 
-### Implemented so far (end of Phase 1)
+### Implemented so far (end of Phase 2)
 
 ```text
 app/
@@ -112,19 +112,39 @@ app/
 │   ├── health.py      # /health, /health/db
 │   └── v1/
 │       ├── router.py  # /api/v1 router
-│       └── info.py    # /api/v1/info (example route → service)
+│       ├── info.py    # /api/v1/info (example route → service)
+│       └── documents.py  # POST /documents, GET /documents/{id}
 ├── core/
 │   ├── config.py      # typed settings (pydantic-settings)
 │   ├── logging.py     # centralized logging setup
 │   └── errors.py      # exceptions and error handlers
 ├── db/
+│   ├── base.py        # SQLAlchemy declarative Base
+│   ├── models.py      # Document model
 │   └── session.py     # SQLAlchemy engine, session factory, get_db
 ├── services/
-│   └── info.py        # example application service
+│   ├── info.py        # example application service
+│   ├── storage.py     # StorageService (boto3 → MinIO / S3)
+│   └── documents.py   # DocumentService (validate, store file, insert row)
 └── schemas/
     ├── health.py
     ├── errors.py
-    └── info.py
+    ├── info.py
+    └── documents.py   # DocumentResponse
+
+migrations/
+├── env.py             # Alembic setup (URL comes from Settings)
+├── script.py.mako
+└── versions/          # generated migrations (excluded from Ruff)
+
+alembic.ini
+
+scripts/
+└── storage_roundtrip.py   # manual upload/download/delete check against MinIO
+
+tests/
+├── unit/              # fakes, run everywhere including CI
+└── integration/       # real PostgreSQL + MinIO, skipped when unavailable
 ```
 
 `app/pipeline/` is not created yet. It arrives in Phase 3.
@@ -220,10 +240,30 @@ This keeps the system easier to test and maintain.
 ### Current endpoints
 
 ```text
-GET /health          liveness: the process is up
-GET /health/db       readiness: the database is reachable
-GET /api/v1/info     example route → service (app name, version, environment)
+GET  /health                   liveness: the process is up
+GET  /health/db                readiness: the database is reachable
+GET  /api/v1/info              example route → service (app name, version, environment)
+POST /api/v1/documents         upload a PDF: store the file, insert the row, return metadata (201)
+GET  /api/v1/documents/{id}    read the metadata of one document
 ```
+
+### Document endpoints
+
+```text
+POST /api/v1/documents (multipart file)
+        │
+        ▼
+Route: read the bytes, call the service
+        │
+        ▼
+DocumentService.create
+   ├── validate: application/pdf, %PDF- bytes, not empty, within MAX_UPLOAD_MB
+   ├── StorageService.upload   → MinIO / S3
+   └── insert Document row     → PostgreSQL
+        (if the insert fails: roll back and delete the stored file)
+```
+
+The response is `DocumentResponse` (`id`, `filename`, `content_type`, `size_bytes`, `status`, `created_at`). `storage_key` is internal and is not returned.
 
 ### Conventions
 
@@ -296,19 +336,28 @@ Object Storage
      └── AWS   → S3
 ```
 
-PostgreSQL stores metadata about the document.
+Files are stored under the key:
 
-Conceptually:
+```text
+documents/<document_id>/<original filename>
+```
+
+The UUID in the key prevents collisions between files with the same name. The bucket itself (`documents`) is created by the `minio-init` container in Docker Compose, not by the application.
+
+PostgreSQL stores metadata about the document, in the `documents` table:
 
 ```text
 Document
-├── id
-├── filename
-├── storage_key
-├── content_type
-├── created_at
-└── processing status
+├── id              UUID, primary key, generated in Python
+├── filename        original file name (last path component)
+├── storage_key     unique key of the file in object storage
+├── content_type    application/pdf
+├── size_bytes      file size
+├── status          uploaded → processing → processed | failed
+└── created_at      set by the database
 ```
+
+`status` is a plain string, not a PostgreSQL ENUM; the application enforces the allowed values.
 
 The database should not be used to store the original PDF binary unless there is a concrete reason to do so.
 
@@ -337,6 +386,8 @@ PostgreSQL
 └── other application data
 ```
 
+Today only `documents` (and Alembic's `alembic_version` table) exists. `document_chunks` and the pgvector extension arrive in Phase 4.
+
 pgvector provides vector similarity search.
 
 The initial retrieval strategy uses dense vector similarity.
@@ -346,6 +397,22 @@ The system should avoid introducing a separate vector database unless PostgreSQL
 ### Connection handling
 
 The SQLAlchemy engine is created lazily in `app/db/session.py` with `pool_pre_ping` enabled, so the app starts without a database and recovers by itself after the database restarts. Routes get one session per request through the `get_db` dependency, and the session is always closed afterwards. `DATABASE_URL` is optional in the settings so tests and CI can run without a database.
+
+### Schema changes
+
+Schema changes are versioned Alembic migrations:
+
+```text
+SQLAlchemy models (app/db/models.py)
+        │
+        ▼
+alembic revision --autogenerate   → migration script (read before applying)
+        │
+        ▼
+alembic upgrade head              → PostgreSQL
+```
+
+Models inherit from `Base` (`app/db/base.py`), which Alembic reads to know what the tables should look like. `migrations/env.py` takes the database URL from `Settings`, so `alembic.ini` holds no real credentials. The same migration history will run against RDS on AWS.
 
 ---
 
@@ -600,15 +667,16 @@ This prevents Airflow from becoming a requirement for every development action.
 
 # 15. Storage Abstraction
 
-The application should use a storage abstraction rather than directly coupling business logic to MinIO.
-
-Conceptually:
+The application uses a storage abstraction rather than directly coupling business logic to MinIO.
 
 ```text
 Application
      │
      ▼
-Storage interface
+StorageService (app/services/storage.py)
+     │
+     ▼
+boto3 (S3 API)
      │
      ├───────────────┐
      ▼               ▼
@@ -616,11 +684,16 @@ Storage interface
    Local             AWS
 ```
 
-The application should be able to switch between them through configuration.
+`StorageService` has three methods: `upload`, `download`, `delete`. It is the only code that imports boto3. boto3 failures are mapped to `NotFoundError` (missing key) or `ExternalServiceError`, so routes never see boto3 exceptions.
 
-The goal is not to build an elaborate abstraction framework.
+Switching between MinIO and S3 is a configuration change:
 
-A small, practical storage service is sufficient.
+```text
+Local:  MINIO_ENDPOINT=http://localhost:9000 + MinIO keys
+AWS:    MINIO_ENDPOINT not set → boto3 talks to real S3 (IAM role on EC2)
+```
+
+The goal is not to build an elaborate abstraction framework. A small, practical storage service is sufficient.
 
 ---
 
@@ -653,7 +726,7 @@ EmbeddingGemma may run locally for embedding generation.
 
 The exact containerization strategy for the embedding component can be decided during implementation based on resource usage and development practicality.
 
-Currently, Docker Compose runs PostgreSQL + pgvector and MinIO. The API runs on the host with `uvicorn`. Containerizing the application comes in Phase 11.
+Currently, Docker Compose runs PostgreSQL + pgvector and MinIO, plus a one-time `minio-init` container that creates the `documents` bucket. The API runs on the host with `uvicorn`. Containerizing the application comes in Phase 11.
 
 ---
 
@@ -720,7 +793,7 @@ Environment-specific values should not be hardcoded into application logic.
 
 Secrets and configuration should be supplied through environment variables or appropriate deployment configuration.
 
-In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them.
+In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) and uploads (`MAX_UPLOAD_MB`).
 
 ---
 
@@ -746,7 +819,7 @@ Examples:
 * retrieval logic
 * citation formatting
 
-Unit tests replace dependencies (for example `get_db`) with fakes using FastAPI's `dependency_overrides`, so they run fast, need no database, and work in CI.
+Unit tests replace dependencies (for example `get_db`, the storage client, or the whole document service) with fakes, so they run fast, need no database or MinIO, and work in CI.
 
 ### Integration tests
 
@@ -760,7 +833,7 @@ Examples:
 * retrieval pipeline
 * API endpoints
 
-Integration tests need real services and are added from Phase 2 onward.
+Integration tests use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable, so CI (which has neither) stays green. Each test removes only the rows and files it created.
 
 The test strategy should remain proportional to the project's size.
 

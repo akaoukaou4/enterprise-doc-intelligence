@@ -158,42 +158,52 @@ The API starts successfully and basic tests pass.
 
 ### Status
 
-**Next**
+**Complete**
 
 ### Objective
 
 Build the data foundation required by the application.
 
-### Build
+### Completed
 
 PostgreSQL:
 
-* database connection
-* SQLAlchemy setup
-* migrations
-* document model
-* document metadata
+* storage settings in the typed `Settings` object (`MINIO_*`, `MAX_UPLOAD_MB`)
+* SQLAlchemy declarative `Base` and the `Document` model
+* Alembic migrations (`migrations/`), with the database URL read from `Settings`
+* first migration: `documents` table (verified, including a downgrade and upgrade round trip)
+* Ruff excludes the Alembic-generated `migrations/versions/` folder
 
 Object storage:
 
-* MinIO integration
-* upload
-* download
-* delete
-* storage abstraction
+* `StorageService` (`upload`, `download`, `delete`) using `boto3`, the only code that knows about the S3 API
+* MinIO locally; the same code targets Amazon S3 when `MINIO_ENDPOINT` is not set
+* boto3 failures mapped to `NotFoundError` / `ExternalServiceError`
 
-### Expected result
+API:
+
+* `POST /api/v1/documents` (validates a PDF, stores the file, inserts the row)
+* `GET /api/v1/documents/{id}` (reads the metadata back)
+* validation: `application/pdf` content type, `%PDF-` magic bytes, non-empty, 20 MB limit
+* upload-then-insert order, with cleanup of the stored file if the insert fails
+* `storage_key` is kept internal and is not returned by the API
+
+Tests:
+
+* unit tests with fakes for storage and the database session
+* integration tests against the real PostgreSQL and MinIO containers, which skip themselves when those services are not available (so CI stays green)
+
+### Result
 
 ```text
 PDF
  │
  ▼
-MinIO
-
-Document metadata
+POST /api/v1/documents
  │
- ▼
-PostgreSQL
+ ├──► MinIO        documents/<document_id>/<filename>
+ │
+ └──► PostgreSQL   documents row (filename, storage_key, size, status)
 ```
 
 ### Learning focus
@@ -209,9 +219,15 @@ PostgreSQL
 
 A PDF can be stored in MinIO and its metadata can be stored in PostgreSQL.
 
+**Met:** a real 5.3 MB PDF (the Docling Technical Report) was uploaded through the running API, its row was verified in PostgreSQL and its file in MinIO; fake PDFs and non-PDF files are rejected with the standard error shape; 40 tests pass (36 unit, 4 integration).
+
 ---
 
 # Phase 3 — Document Processing Pipeline
+
+### Status
+
+**Next**
 
 ### Objective
 
@@ -818,6 +834,8 @@ The project should be understandable to someone seeing the repository for the fi
 The roadmap contains several major milestones.
 
 ## Milestone 1 — Backend Foundation
+
+**Reached** (end of Phase 2)
 
 After Phase 2:
 
