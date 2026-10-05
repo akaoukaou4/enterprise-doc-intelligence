@@ -14,7 +14,16 @@ class Settings(BaseSettings):
     # a database (e.g. in CI); code that needs it fails with a clear message.
     database_url: str | None = None
 
-    # extra="ignore": .env also holds MINIO_*, etc.
+    # Object storage (S3 API). MinIO locally, Amazon S3 on AWS.
+    # Optional for the same reason as database_url.
+    # minio_endpoint includes the scheme (http:// or https://), so no
+    # separate "secure" flag is needed.
+    minio_endpoint: str | None = None
+    minio_access_key: str | None = None
+    minio_secret_key: str | None = None
+    minio_bucket: str = "documents"
+
+    # extra="ignore": .env also holds MINIO_SECURE, etc.
     # We model them as each phase needs them.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
