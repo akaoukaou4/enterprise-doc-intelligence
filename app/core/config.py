@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     minio_secret_key: str | None = None
     minio_bucket: str = "documents"
 
+    # Maximum accepted PDF size in megabytes. reads MAX_UPLOAD_MB
+    max_upload_mb: int = 20
+
     # extra="ignore": .env also holds MINIO_SECURE, etc.
     # We model them as each phase needs them.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
