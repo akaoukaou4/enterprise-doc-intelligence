@@ -10,11 +10,14 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
     "boto3>=1.43.107",
+    "docling>=2.133.0",
     "fastapi>=0.142.2",
     "psycopg>=3.3.6",
     "pydantic-settings>=2.15.0",
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.1.2",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -46,3 +49,15 @@ testpaths = ["tests"]
 
 [tool.uv]
 package = false
+
+# PyTorch is installed from the CPU-only index (no CUDA download).
+# This only applies to torch and torchvision when they are listed in
+# the dependencies above, which `uv add` does for us.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

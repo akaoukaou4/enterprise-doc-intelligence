@@ -89,6 +89,9 @@ data/**/*.csv
 !data/sample_docs/
 !data/eval/
 
+# Docling exploration output (generated, can be large)
+data/sample_docs/output/
+
 # =========================
 # Logs
 # =========================
