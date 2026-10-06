@@ -99,6 +99,8 @@ Direct    Airflow
 Execution  Orchestration
 ```
 
+Implemented in Phase 3: `app/pipeline/` imports no FastAPI, Airflow, or database code (see section 11).
+
 ---
 
 ## 2.3 Use Direct and Orchestrated Execution Modes
@@ -158,6 +160,8 @@ Use `google/embeddinggemma-300m` for document and query embeddings.
 
 The embedding model can be replaced later if evaluation shows that another model performs better.
 
+The model is already downloaded in the Hugging Face cache on D: (see 11.3).
+
 ---
 
 ## 3.3 Start With Dense Retrieval
@@ -205,6 +209,8 @@ Docling is used for document parsing and structured extraction.
 * Better suited to enterprise documents than relying only on basic PDF text extraction.
 * Supports preservation of useful document structure.
 
+Phase 3 confirmed this on two real PDFs: prose, headings, page numbers, and the license-free layout of an ISO standard were extracted well. Its limits are recorded in 11.10.
+
 ---
 
 ## 4.2 Use HybridChunker
@@ -219,6 +225,8 @@ Docling's `HybridChunker` is used as the initial chunking strategy.
 * Avoids designing a custom chunking algorithm prematurely.
 
 Chunking strategy can be changed later based on retrieval evaluation.
+
+Phase 3 result: chunks averaged 447 to 687 characters, carried page numbers and headings, and skipped page headers and footers by themselves. It keeps a code block intact and writes table cells as `row, column = value`.
 
 ---
 
@@ -634,6 +642,8 @@ The `documents` table uses a UUID primary key generated in Python, a unique `sto
 * ENUM types are awkward to change in migrations; the application enforces the allowed values.
 * Phase 3 will show which extra fields (for example an error message or page count) are really needed.
 
+Phase 3 outcome: the pipeline did not need any new `documents` column. If Phase 4 or 8 needs an error message or page count, it is added then.
+
 ---
 
 ## 10.4 A Small Storage Service
@@ -706,7 +716,183 @@ Tests in `tests/integration/` use the real PostgreSQL and MinIO containers. They
 
 ---
 
-# 11. Core Decision Rule
+# 11. Document Processing Decisions (Phase 3)
+
+## 11.1 Look at Real Output Before Designing
+
+**Decision:**
+Before writing any pipeline code, Docling was run on two real PDFs and its output was inspected: pages, headings, tables, chunks, content layers, and control characters. The chunk schema and the cleaning rules come from those measurements. The throwaway inspection scripts were deleted afterwards; only `scripts/explore_docling.py` and `scripts/run_pipeline.py` were kept.
+
+**Why:**
+
+* `PROJECT.md` says the metadata schema should be based on what the libraries actually provide, not on invented fields.
+* Several assumptions were wrong until measured: the first sample (a research paper) turned out to contain screenshots of another paper, and picture text never reached the chunks.
+* The two samples were different on purpose. A research paper (Docling Technical Report, 9 pages) and a policy-style standard (ISO/IEC 27001:2022, 26 pages) behave very differently, and the second one is closer to the project's target content.
+
+---
+
+## 11.2 CPU-Only PyTorch Through an Explicit uv Index
+
+**Decision:**
+Docling is installed together with `torch` and `torchvision` listed as direct dependencies. `pyproject.toml` points both to an explicit `pytorch-cpu` index (`https://download.pytorch.org/whl/cpu`, `explicit = true`).
+
+**Why:**
+
+* The GTX 1050 has 4 GB of VRAM, too little to be useful for Docling's models, and the CUDA build adds several GB for no benefit.
+* `[tool.uv.sources]` only applies to packages listed directly, so `torch` must be a direct dependency for the setting to work.
+* On Linux, PyPI's `torch` is the CUDA build, so without this setting GitHub Actions would download CUDA libraries it cannot use. CI stayed green with this setup.
+* `explicit = true` means that index is used only for the packages named in `sources`.
+
+Measured speed on this CPU once models are cached: about 10 s per page (88 s for 9 pages). The first runs took 311 to 338 s, because they included model downloads.
+
+---
+
+## 11.3 Caches Live on D:, Outside the Repository
+
+**Decision:**
+`UV_CACHE_DIR` and `HF_HOME` are user environment variables pointing to `D:\Backup\School\Project\_caches\uv` and `D:\Backup\School\Project\_caches\huggingface`. The old uv cache on C: was cleaned. The EmbeddingGemma model already downloaded on C: was moved, not downloaded again.
+
+**Why:**
+
+* C: (the SSD) had about 17 GB free; Docling, PyTorch and the models need several GB.
+* uv uses hardlinks only within one drive. With the cache and `.venv` both on D:, PyTorch is stored once instead of twice.
+* The `_caches` folder is outside the repository, so it cannot be committed by accident.
+
+Harmless side effect: Hugging Face warns that Windows has no symlink support, so its cache uses somewhat more space.
+
+---
+
+## 11.4 Chunk Schema From What Docling Provides
+
+**Decision:**
+The pipeline's `Chunk` is a frozen dataclass with three fields: `text`, `page_numbers` (a list of ints), and `heading` (a string or `None`). `document_id` and `embedding` are not part of it yet: the document ID is attached when chunks are stored, and the embedding arrives in Phase 4.
+
+**Why:**
+
+* `chunk.meta.doc_items` carries page numbers per item, and `chunk.meta.headings` carries the headings. Nothing was invented.
+* Chunks can span pages (for example pages 2 and 3), so a single page number would be wrong for citations. A citation can show a range.
+* A plain dataclass keeps the pipeline free of Docling, FastAPI, and database types.
+
+---
+
+## 11.5 Keep Only the Nearest Heading
+
+**Decision:**
+`heading` is the last entry of `chunk.meta.headings`. No heading hierarchy is built.
+
+**Why:**
+
+* Docling reported every heading as level 1 on both PDFs ("3.1 PDF backends" and "Abstract" alike), so heading levels are unreliable.
+* The heading text itself ("6.1.2 Information security risk assessment") is a good section label for a citation.
+
+---
+
+## 11.6 Four Cleaning Rules, Each Backed by Data
+
+**Decision:**
+The pipeline applies exactly these rules:
+
+1. Drop chunks that come from the table of contents (11.7).
+2. Remove the license watermark line (a line starting with `--` made of backticks, commas and hyphens, at least 15 characters and containing a backtick).
+3. Strip the invisible characters `\x08` (backspace) and `\ufeff` (byte-order mark) from text and headings.
+4. Drop chunks that are empty after cleaning.
+
+**Why:**
+
+* The ISO PDF produced 156 chunks; 84 were table-of-contents lines with dot leaders, 95 contained control characters (84 of them in the table of contents), and 14 contained the watermark. After the rules, 72 chunks remain, with no dot leaders, watermarks or invisible characters.
+* `\x08` is invisible in a UI but would end up in the database, in the embedded text, and in the prompt sent to Gemini.
+* The watermark appeared as body text on most pages and as a page footer on some, so it cannot be removed by content layer alone.
+* The watermark pattern requires a backtick so that an ordinary line of dashes is never removed (covered by a unit test).
+
+Page headers and footers need no rule: Docling puts them in the `FURNITURE` layer and the chunker skips them. Text inside pictures needs no rule either: only 2 of 88 items in the ISO chunks sat inside a picture, while 684 picture-text items existed in the Technical Report, and almost none reached the chunks.
+
+---
+
+## 11.7 Filter the Table of Contents After Chunking, by Label
+
+**Decision:**
+`chunk_document` drops any chunk whose `doc_items` include an item labelled `document_index`. The Docling document itself is not modified.
+
+**Why:**
+
+* Docling labels the table of contents `document_index` (a 47-row table, 60,335 characters as Markdown), so a label check is more reliable than a text pattern.
+* Filtering after chunking is simpler and leaves Docling's objects untouched. It costs 84 chunks built and thrown away, which is negligible.
+* This is the likely source of the 16,494-token warning from the chunker.
+* The rule only works when Docling detects the table of contents. A PDF whose contents page is not detected would keep its dot-leader chunks; Phase 7 evaluation or a new sample would show it.
+
+---
+
+## 11.8 No Minimum Chunk Size
+
+**Decision:**
+Only chunks that are empty after cleaning are dropped. There is no length threshold.
+
+**Why:**
+
+* There is no evidence that small chunks hurt retrieval. The smallest real chunk was 11 characters (`(normative)`), which is harmless.
+* A threshold would be a tuning knob without data (ENGINEERING_PRINCIPLES 11). If Phase 7 shows tiny chunks hurt, we add it then.
+
+---
+
+## 11.9 Pipeline Structure: Small Stages, Injectable Chunker
+
+**Decision:**
+`app/pipeline/` holds `models.py`, `extract.py`, `chunk.py`, `clean.py`, and `process.py`. `process_pdf(path)` chains extract, chunk, clean. The Docling converter is created once and cached, because building it loads models. `chunk_document` takes an optional chunker argument.
+
+**Why:**
+
+* Each stage is understandable and testable alone (ENGINEERING_PRINCIPLES 7), and Airflow can later call the same functions.
+* `clean.py` is made of pure functions, so its 13 tests need no Docling and run in a fraction of a second, using the exact junk strings found in the real PDFs.
+* The injectable chunker lets the 6 chunk tests use fake chunks, so no model is loaded.
+
+Scripts that import from `app` run as modules (`uv run python -m scripts.run_pipeline`), because running a file directly puts only the `scripts/` folder on the Python path.
+
+---
+
+## 11.10 Known Limitations Accepted for Now
+
+**Decision:**
+These problems were found and are documented, not fixed:
+
+* **Text and tables inside embedded images are unreliable.** Page 8 of the Technical Report is a screenshot of another paper; Docling read it as page text, which produced duplicated paragraphs and badly structured tables with OCR errors. No code filter exists for this.
+* **Some headings are wrong or missing.** A running page header (`ISO/IEC 27001:2022(E)`) was read as a heading on pages 8 and 14, and the `9.2` heading was missed, so the 9.2.1 text sits under `9.1`. Front-matter chunks can carry a wrong heading (for example `Version 1.0` for an author list).
+* **Tables can lose their header row** (Annex A of ISO 27001 shows `5.12, 1 = Classification...`), and a table can be split across chunks, so the second part has no caption. The text and the control IDs remain retrievable.
+* **Rows without a separator line merge** (Table 1 of the Technical Report shows `4 16` and `177 s 167 s`). All the data is present.
+
+**Why:**
+
+* The sample corpus is policy-style prose, where these cases are rare. A rule such as "ignore a heading that repeats on several pages" would also remove legitimate repeated captions like `Table A.1 (continued)`.
+* Advanced table options or heavier models were rejected: the one real table was already acceptable, and no setting makes 5 pt screenshots readable.
+* Phase 7 evaluation will show whether any of these affect answers and citations. Questions about tables and mislabelled sections should be part of the evaluation dataset.
+
+---
+
+## 11.11 HybridChunker Currently Uses the Wrong Tokenizer
+
+**Decision:**
+HybridChunker runs with its default tokenizer (`sentence-transformers/all-MiniLM-L6-v2`, 512-token limit) for now. In Phase 4 it is configured with the EmbeddingGemma tokenizer, and embeddings are computed from the contextualized chunk (heading plus text), not from the raw chunk text.
+
+**Why:**
+
+* Chunk size should be measured with the tokenizer of the model that embeds the chunks; token counts differ between tokenizers.
+* The MiniLM model is not used anywhere else, so its download (about 100 MB) is temporary.
+
+---
+
+## 11.12 Sample Documents Stay Local
+
+**Decision:**
+Sample PDFs and Docling output stay in `data/sample_docs/`, which is git-ignored (`data/**/*.pdf` and `data/sample_docs/output/`). `data/eval/` stays trackable. The ISO/IEC 27001 standard is copyrighted and is used locally only.
+
+**Why:**
+
+* The repository is public and must not contain third-party copyrighted documents or large generated JSON.
+* The final demo and the Phase 7 evaluation dataset need an openly licensed document.
+* The evaluation dataset should be JSON or YAML, because `.gitignore` also ignores `data/**/*.csv`.
+
+---
+
+# 12. Core Decision Rule
 
 When considering a new technology, feature, or architectural change, ask:
 

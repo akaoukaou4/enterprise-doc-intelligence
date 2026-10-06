@@ -227,37 +227,66 @@ A PDF can be stored in MinIO and its metadata can be stored in PostgreSQL.
 
 ### Status
 
-**Next**
+**Complete**
 
 ### Objective
 
 Turn uploaded PDFs into structured, meaningful chunks.
 
-### Build
+### Approach
+
+Exploration came before design. Docling was run on two real PDFs (the Docling Technical Report, a research paper, and ISO/IEC 27001:2022, a policy-style standard), and the chunk schema and cleaning rules were derived from what Docling actually produced, not from assumptions. The throwaway exploration scripts were deleted afterwards; their findings are recorded in `DECISIONS.md` (section 11).
+
+### Completed
+
+Environment:
+
+* Docling 2.133.0 with CPU-only PyTorch (explicit `pytorch-cpu` uv index in `pyproject.toml`)
+* uv and Hugging Face caches moved to `D:\Backup\School\Project\_caches\` (`UV_CACHE_DIR`, `HF_HOME`), outside the repository
+* `.gitignore`: generated Docling output (`data/sample_docs/output/`) is ignored; `data/eval/` stays trackable
+
+Pipeline (`app/pipeline/`, no FastAPI, Airflow or database imports):
+
+* `models.py`: `Chunk` (text, page_numbers, heading)
+* `extract.py`: PDF to Docling document (converter created once and cached)
+* `chunk.py`: HybridChunker to `Chunk` objects; table-of-contents chunks dropped by Docling's `document_index` label; nearest heading kept as the section label
+* `clean.py`: four rules, each backed by data: remove invisible characters (`\x08`, `\ufeff`), remove the license watermark line, drop chunks that are empty after cleaning, and (in `chunk.py`) drop the table of contents
+* `process.py`: `process_pdf(path)` runs extract, chunk, clean
+
+Tests and tooling:
+
+* 19 new unit tests (13 for cleaning, 6 for chunking) using the exact junk strings found in the ISO PDF; no Docling model needed
+* `scripts/explore_docling.py` (inspect Docling output for any PDF) and `scripts/run_pipeline.py` (run the real pipeline end to end) kept
+* CI stays green with the heavier dependencies
+
+### Result
 
 ```text
 PDF
  ↓
-Docling
+extract (Docling)
  ↓
-Structured document
+chunk (HybridChunker, table of contents dropped)
  ↓
-Cleaning
+clean (watermark, invisible characters, empty chunks)
  ↓
-HybridChunker
- ↓
-Chunks + metadata
+Chunk(text, page_numbers, heading)
 ```
 
-### Preserve
+Measured results:
 
-Where useful:
+* Docling Technical Report: 9 pages, 49 chunks, pages 1 to 9 covered, 88 s on CPU once models are cached
+* ISO 27001: 156 raw chunks, 84 of them table-of-contents junk; 72 chunks after the pipeline, with no dot leaders, watermark lines or invisible characters left
 
-* document ID
-* page number
-* section / heading
-* chunk text
-* other provenance metadata
+### Known limitations (documented, not fixed)
+
+* Text and tables inside embedded images are unreliable (page 8 of the Technical Report is a screenshot of another paper)
+* Docling reports every heading as level 1, so only the nearest heading is kept
+* Some headings are wrong or missing (a running page header read as a heading; the `9.2` heading of ISO 27001 was missed, so its text sits under `9.1`)
+* A table can lose its header row (Annex A of ISO 27001) and can be split across chunks without its caption
+* Front-matter chunks (title blocks, author lists) can carry a wrong heading
+
+Phase 7 evaluation will show whether any of these matter enough to fix.
 
 ### Learning focus
 
@@ -266,14 +295,21 @@ Where useful:
 * document structure
 * chunking strategies
 * provenance
+* diagnosing real-world data before designing
 
 ### Exit condition
 
 A real PDF can be processed into useful chunks with page/source information preserved.
 
+**Met:** `process_pdf` ran end to end on the Docling Technical Report (49 chunks with pages and headings), and the same chunk and clean stages produced 72 clean chunks from the ISO 27001 PDF; 59 tests pass or skip (55 passed, 4 integration tests skipped without Docker); CI is green.
+
 ---
 
 # Phase 4 — Embedding System
+
+### Status
+
+**Next**
 
 ### Objective
 
@@ -285,8 +321,11 @@ Convert document chunks into semantic vectors.
 * embedding service
 * document embedding generation
 * query embedding generation
+* `CREATE EXTENSION vector` migration and the `document_chunks` table (text, page_numbers, heading, `vector(768)`, foreign key to `documents`)
 * pgvector storage
 * vector dimension validation
+* switch HybridChunker to the EmbeddingGemma tokenizer, so chunk size matches the model that embeds it (it currently uses the default MiniLM tokenizer)
+* embed `chunker.contextualize(chunk)` (heading + text), not the raw chunk text
 
 Current embedding baseline:
 
@@ -294,6 +333,8 @@ Current embedding baseline:
 google/embeddinggemma-300m
 → 768 dimensions
 ```
+
+The model is already downloaded in the Hugging Face cache on D:.
 
 ### Expected result
 
@@ -440,6 +481,8 @@ Expected document
 Expected page
 ```
 
+Store it as JSON or YAML in `data/eval/` (not CSV: `.gitignore` ignores `data/**/*.csv`).
+
 ### Evaluate
 
 At minimum:
@@ -449,6 +492,8 @@ At minimum:
 * citation correctness
 * answer grounding
 * obvious hallucination cases
+
+Include questions that probe the known Phase 3 limitations (tables, wrongly labelled headings), so the evaluation shows whether they matter.
 
 ### Use evaluation to identify weaknesses.
 
@@ -494,7 +539,9 @@ Embed
 Store
 ```
 
-The DAG calls the existing Python pipeline functions.
+The DAG calls the existing Python pipeline functions (`app/pipeline/`).
+
+Planning note: conversion takes about 10 s per page on CPU, so a 20-page PDF needs several minutes. Task timeouts and retries must allow for that.
 
 ### Architecture
 
@@ -627,6 +674,8 @@ Make the application reproducible and portable.
 * startup behavior
 * persistent volumes
 * container networking
+
+Planning note: the application image now includes Docling and CPU PyTorch, so it will be large. Model downloads (Docling, EmbeddingGemma) need a persistent volume or a build-time step.
 
 ### Verify
 
@@ -799,7 +848,7 @@ Turn the finished project into a strong portfolio artifact.
 * setup instructions
 * deployment instructions
 * screenshots
-* demo
+* demo (using an openly licensed document, not the copyrighted ISO standard)
 * evaluation results
 * technical decisions
 * limitations
@@ -868,6 +917,8 @@ pgvector
 ```
 
 The system can transform documents into searchable semantic knowledge.
+
+Progress: the PDF → Docling → HybridChunker → clean chunks part is done (Phase 3). Embeddings and pgvector storage remain.
 
 ---
 

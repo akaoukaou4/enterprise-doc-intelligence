@@ -102,7 +102,7 @@ Each directory should have a clear responsibility.
 
 New directories should only be introduced when a real requirement appears.
 
-### Implemented so far (end of Phase 2)
+### Implemented so far (end of Phase 3)
 
 ```text
 app/
@@ -126,6 +126,12 @@ app/
 │   ├── info.py        # example application service
 │   ├── storage.py     # StorageService (boto3 → MinIO / S3)
 │   └── documents.py   # DocumentService (validate, store file, insert row)
+├── pipeline/          # document processing, independent of FastAPI and Airflow
+│   ├── models.py      # Chunk (text, page_numbers, heading)
+│   ├── extract.py     # PDF → Docling document
+│   ├── chunk.py       # Docling document → Chunk list (table of contents dropped)
+│   ├── clean.py       # cleaning rules (pure functions)
+│   └── process.py     # process_pdf(): extract → chunk → clean
 └── schemas/
     ├── health.py
     ├── errors.py
@@ -140,14 +146,18 @@ migrations/
 alembic.ini
 
 scripts/
-└── storage_roundtrip.py   # manual upload/download/delete check against MinIO
+├── storage_roundtrip.py   # manual upload/download/delete check against MinIO
+├── explore_docling.py     # convert one PDF with Docling and print what it produced
+└── run_pipeline.py        # run the real process_pdf() on one PDF end to end
 
 tests/
 ├── unit/              # fakes, run everywhere including CI
 └── integration/       # real PostgreSQL + MinIO, skipped when unavailable
 ```
 
-`app/pipeline/` is not created yet. It arrives in Phase 3.
+Scripts that import from `app` are run as modules from the project root, for example `uv run python -m scripts.run_pipeline`.
+
+The pipeline does not store anything yet: `process_pdf` returns a list of `Chunk` objects. Writing chunks to the database arrives in Phase 4, together with the `document_chunks` table.
 
 ---
 
@@ -247,6 +257,8 @@ POST /api/v1/documents         upload a PDF: store the file, insert the row, ret
 GET  /api/v1/documents/{id}    read the metadata of one document
 ```
 
+No endpoint calls the pipeline yet. Connecting upload to processing comes with the pipeline's storage step in Phase 4 and with Airflow in Phase 8.
+
 ### Document endpoints
 
 ```text
@@ -304,20 +316,52 @@ The document pipeline is responsible for converting a PDF into searchable knowle
 
 The pipeline should preserve useful document provenance.
 
-A chunk should conceptually contain:
+### Implemented in Phase 3
+
+Everything up to the clean chunks is implemented in `app/pipeline/`:
+
+```text
+PDF file
+   │
+   ▼
+extract_document        extract.py   Docling converter (created once, cached)
+   │
+   ▼
+chunk_document          chunk.py     HybridChunker; drops table-of-contents chunks
+   │                                 (Docling label "document_index");
+   │                                 keeps page numbers and the nearest heading
+   ▼
+clean_chunks            clean.py     removes \x08 and \ufeff, removes the license
+   │                                 watermark line, drops chunks left empty
+   ▼
+list[Chunk]             models.py    Chunk(text, page_numbers, heading)
+```
+
+`process_pdf(path)` in `process.py` runs the three stages in order. It does no storage or database work and imports no FastAPI or Airflow code.
+
+The stages are small and separate so each can be tested alone. `clean.py` is pure (text in, text out). `chunk_document` accepts a chunker as an argument, so tests use fake chunks without loading any model.
+
+### What the chunk contains
 
 ```text
 Chunk
-├── id
-├── document_id
-├── text
-├── page_number
-├── section / heading
-├── useful metadata
-└── embedding
+├── text            the chunk text
+├── page_numbers    list of pages (a chunk can span pages, e.g. [2, 3])
+└── heading         nearest section heading, or None
 ```
 
-The exact schema should be based on the actual information available from Docling and the application requirements.
+`document_id`, `chunk_index`, and `embedding` are added when chunks are stored (Phase 4). The schema comes from what Docling actually provides; see DECISIONS.md section 11.
+
+### Known behavior and limits
+
+* Page headers and footers are in Docling's `FURNITURE` layer and are skipped by the chunker.
+* Text inside pictures is almost never part of the chunks.
+* Tables become chunks of `row, column = value` text; a table can be split across chunks, and its header row can be lost.
+* Every heading is reported at level 1, so only the nearest heading is kept, and some headings are wrong or missing.
+* Speed on CPU is about 10 s per page once models are cached.
+* HybridChunker uses its default tokenizer for now (MiniLM). Phase 4 switches it to the EmbeddingGemma tokenizer and embeds the heading together with the text.
+
+Details and reasoning are in DECISIONS.md section 11.
 
 ---
 
@@ -380,7 +424,8 @@ PostgreSQL
 │
 ├── document_chunks
 │     ├── text
-│     ├── metadata
+│     ├── page_numbers
+│     ├── heading
 │     └── embedding
 │
 └── other application data
@@ -456,6 +501,11 @@ Vector B
 ```
 
 The vectors can then be compared through pgvector similarity search.
+
+Two requirements come from Phase 3:
+
+* HybridChunker must use the EmbeddingGemma tokenizer, so chunk size is measured by the model that embeds the chunk.
+* The text that is embedded is the contextualized chunk (heading plus text), not the raw chunk text.
 
 ---
 
@@ -554,8 +604,8 @@ Conceptually:
 Retrieved chunk
 │
 ├── document_id
-├── page_number
-├── section
+├── page_numbers
+├── heading
 └── text
 ```
 
@@ -564,8 +614,11 @@ The final answer can therefore reference:
 ```text
 Source:
 Document: Employee Handbook.pdf
-Page: 14
+Pages: 14
+Section: 5.2 Policy
 ```
+
+Because a chunk can span pages, a citation can show a page range. Because some headings are wrong or missing (see section 6), the page number is the more reliable part of a citation, and the section label is a helpful hint.
 
 The exact citation format can evolve with the UI.
 
@@ -623,6 +676,8 @@ This is important for:
 * unit testing
 * debugging
 * future orchestration changes
+
+Conversion takes about 10 s per page on CPU, so task timeouts and retries must allow for several minutes per document.
 
 ---
 
@@ -728,6 +783,12 @@ The exact containerization strategy for the embedding component can be decided d
 
 Currently, Docker Compose runs PostgreSQL + pgvector and MinIO, plus a one-time `minio-init` container that creates the `documents` bucket. The API runs on the host with `uvicorn`. Containerizing the application comes in Phase 11.
 
+### Local machine setup (Windows)
+
+* The project lives on D:. The uv cache and the Hugging Face cache are on D: as well (`UV_CACHE_DIR` and `HF_HOME` point to `D:\Backup\School\Project\_caches\...`), outside the repository, so they are never committed and C: stays free.
+* PyTorch is the CPU-only build, installed from an explicit `pytorch-cpu` uv index declared in `pyproject.toml`.
+* Docling and PyTorch make the application image large, and Docling and EmbeddingGemma download models at first use. Phase 11 must give those models a persistent volume or a build-time download.
+
 ---
 
 # 17. AWS Deployment Architecture
@@ -793,7 +854,7 @@ Environment-specific values should not be hardcoded into application logic.
 
 Secrets and configuration should be supplied through environment variables or appropriate deployment configuration.
 
-In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) and uploads (`MAX_UPLOAD_MB`).
+In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) and uploads (`MAX_UPLOAD_MB`). The pipeline needs no settings yet.
 
 ---
 
@@ -820,6 +881,8 @@ Examples:
 * citation formatting
 
 Unit tests replace dependencies (for example `get_db`, the storage client, or the whole document service) with fakes, so they run fast, need no database or MinIO, and work in CI.
+
+Pipeline tests follow the same rule: `test_pipeline_clean.py` (13 tests) uses the exact junk strings found in real PDFs, and `test_pipeline_chunk.py` (6 tests) uses a fake chunker, so no Docling model is loaded. The real Docling conversion is checked manually with `scripts/run_pipeline.py`, because it takes minutes.
 
 ### Integration tests
 
