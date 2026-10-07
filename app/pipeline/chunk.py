@@ -17,13 +17,10 @@ from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTok
 from docling_core.types.doc import DoclingDocument
 from transformers import AutoTokenizer
 
+from app.core.config import get_settings
 from app.pipeline.models import Chunk
 
 TOC_LABEL = "document_index"
-
-# Phase 4 will move the model name into Settings, when the embedding service
-# needs it too. Until then it lives here, next to the only code that uses it.
-EMBEDDING_MODEL_ID = "google/embeddinggemma-300m"
 
 # The model accepts up to 2048 tokens. We keep 512 on purpose: it is the same
 # budget the chunks had in Phase 3, so only the tokenizer changes. Chunk size
@@ -33,16 +30,16 @@ MAX_CHUNK_TOKENS = 512
 
 @lru_cache(maxsize=1)
 def get_tokenizer() -> HuggingFaceTokenizer:
-    """The EmbeddingGemma tokenizer, loaded once (it reads files from the cache)."""
+    """The tokenizer of the embedding model, loaded once (reads the HF cache)."""
     return HuggingFaceTokenizer(
-        tokenizer=AutoTokenizer.from_pretrained(EMBEDDING_MODEL_ID),
+        tokenizer=AutoTokenizer.from_pretrained(get_settings().embedding_model_id),
         max_tokens=MAX_CHUNK_TOKENS,
     )
 
 
 @lru_cache(maxsize=1)
 def get_default_chunker() -> HybridChunker:
-    """HybridChunker that measures chunk size with the EmbeddingGemma tokenizer."""
+    """HybridChunker that measures chunk size with the embedding model's tokenizer."""
     return HybridChunker(tokenizer=get_tokenizer())
 
 
@@ -69,7 +66,7 @@ def chunk_document(doc: DoclingDocument, chunker: Any | None = None) -> list[Chu
     """Split a Docling document into chunks, skipping table-of-contents chunks.
 
     The chunker can be passed in (tests use a fake one). By default it is
-    HybridChunker with the EmbeddingGemma tokenizer.
+    HybridChunker with the embedding model's tokenizer.
     """
     chunker = chunker or get_default_chunker()
     chunks: list[Chunk] = []

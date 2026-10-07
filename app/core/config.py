@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     # Maximum accepted PDF size in megabytes. reads MAX_UPLOAD_MB
     max_upload_mb: int = 20
 
+    # Hugging Face id of the embedding model. reads EMBEDDING_MODEL_ID.
+    # The chunker's tokenizer and the embedding service both use this one
+    # setting, so chunk size is always measured by the model that embeds it.
+    # The database column is vector(768): another model needs the same size
+    # or a new migration (the service checks this when the model loads).
+    embedding_model_id: str = "google/embeddinggemma-300m"
+
     # extra="ignore": .env also holds MINIO_SECURE, etc.
     # We model them as each phase needs them.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
