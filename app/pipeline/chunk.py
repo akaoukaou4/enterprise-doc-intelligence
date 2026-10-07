@@ -4,16 +4,46 @@ Uses Docling's HybridChunker and keeps the provenance we need for citations
 (page numbers and the nearest heading). Chunks that come from the table of
 contents are dropped here, because that decision needs Docling's label for the
 table ("document_index"), not a text pattern.
+
+Chunk size is measured with the EmbeddingGemma tokenizer, so the token budget
+refers to the same model that later embeds the chunks.
 """
 
+from functools import lru_cache
 from typing import Any
 
 from docling.chunking import HybridChunker
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from docling_core.types.doc import DoclingDocument
+from transformers import AutoTokenizer
 
 from app.pipeline.models import Chunk
 
 TOC_LABEL = "document_index"
+
+# Phase 4 will move the model name into Settings, when the embedding service
+# needs it too. Until then it lives here, next to the only code that uses it.
+EMBEDDING_MODEL_ID = "google/embeddinggemma-300m"
+
+# The model accepts up to 2048 tokens. We keep 512 on purpose: it is the same
+# budget the chunks had in Phase 3, so only the tokenizer changes. Chunk size
+# is tuned later, with evaluation data (Phase 7), not by intuition.
+MAX_CHUNK_TOKENS = 512
+
+
+@lru_cache(maxsize=1)
+def get_tokenizer() -> HuggingFaceTokenizer:
+    """The EmbeddingGemma tokenizer, loaded once (it reads files from the cache)."""
+    return HuggingFaceTokenizer(
+        tokenizer=AutoTokenizer.from_pretrained(EMBEDDING_MODEL_ID),
+        max_tokens=MAX_CHUNK_TOKENS,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_default_chunker() -> HybridChunker:
+    """HybridChunker that measures chunk size with the EmbeddingGemma tokenizer."""
+    return HybridChunker(tokenizer=get_tokenizer())
 
 
 def _label_value(item: Any) -> str:
@@ -39,10 +69,9 @@ def chunk_document(doc: DoclingDocument, chunker: Any | None = None) -> list[Chu
     """Split a Docling document into chunks, skipping table-of-contents chunks.
 
     The chunker can be passed in (tests use a fake one). By default it is
-    HybridChunker with its default tokenizer; Phase 4 switches it to the
-    EmbeddingGemma tokenizer.
+    HybridChunker with the EmbeddingGemma tokenizer.
     """
-    chunker = chunker or HybridChunker()
+    chunker = chunker or get_default_chunker()
     chunks: list[Chunk] = []
     for raw in chunker.chunk(dl_doc=doc):
         doc_items = raw.meta.doc_items
