@@ -278,6 +278,8 @@ Measured results:
 * Docling Technical Report: 9 pages, 49 chunks, pages 1 to 9 covered, 88 s on CPU once models are cached
 * ISO 27001: 156 raw chunks, 84 of them table-of-contents junk; 72 chunks after the pipeline, with no dot leaders, watermark lines or invisible characters left
 
+(These chunk counts were measured with HybridChunker's default MiniLM tokenizer. Phase 4 switched to the EmbeddingGemma tokenizer, which gives 31 and 58 chunks for the same PDFs.)
+
 ### Known limitations (documented, not fixed)
 
 * Text and tables inside embedded images are unreliable (page 8 of the Technical Report is a screenshot of another paper)
@@ -309,44 +311,74 @@ A real PDF can be processed into useful chunks with page/source information pres
 
 ### Status
 
-**Next**
+**Complete**
 
 ### Objective
 
 Convert document chunks into semantic vectors.
 
-### Build
+### Approach
 
-* EmbeddingGemma integration
-* embedding service
-* document embedding generation
-* query embedding generation
-* `CREATE EXTENSION vector` migration and the `document_chunks` table (text, page_numbers, heading, `vector(768)`, foreign key to `documents`)
-* pgvector storage
-* vector dimension validation
-* switch HybridChunker to the EmbeddingGemma tokenizer, so chunk size matches the model that embeds it (it currently uses the default MiniLM tokenizer)
-* embed `chunker.contextualize(chunk)` (heading + text), not the raw chunk text
+Every unknown was checked before code was written: the model card (prompts, sequence length, dimensions, precision), the installed packages, and the behavior of the model on a few real sentences. Chunk sizes were compared before and after the tokenizer switch, and the whole chain was run on a real PDF before the phase was closed.
 
-Current embedding baseline:
+### Completed
+
+Environment:
+
+* EmbeddingGemma (`google/embeddinggemma-300m`) loads from the Hugging Face cache on D: through `sentence-transformers` (already installed; no new AI package needed)
+* the model is gated: a Hugging Face login (`uv run hf auth login`) is required, because sentence-transformers also downloads small module files
+* `pgvector` Python package added (SQLAlchemy `Vector` type and `cosine_distance`)
+* one new setting, `EMBEDDING_MODEL_ID`, read by both the chunker tokenizer and the embedding service
+
+Chunking:
+
+* HybridChunker now measures chunk size with the EmbeddingGemma tokenizer (`MAX_CHUNK_TOKENS = 512`)
+* tokenizer and chunker are created once and cached
+
+Database:
+
+* migration `3f9a7c2d1e84`: `CREATE EXTENSION vector` and the `document_chunks` table (document_id foreign key with `ON DELETE CASCADE`, chunk_index, text, `page_numbers integer[]`, heading, `embedding vector(768)`, created_at)
+* unique constraint on `(document_id, chunk_index)`; no vector index yet (see Phase 5 notes)
+* verified with a downgrade and upgrade round trip
+
+Services:
+
+* `EmbeddingService` (`app/services/embeddings.py`): `embed_documents(chunks)` and `embed_query(question)`; the model loads on first use; a dimension check rejects a model whose vectors are not 768-dimensional
+* documents are embedded as `title: <heading or none> | text: <chunk text>`; questions use the model's query prompt
+* `ChunkService.replace_chunks(document_id, chunks, vectors)` (`app/services/chunks.py`): validates input, then deletes the old chunks and inserts the new ones in one transaction
+
+Tooling and tests:
+
+* `scripts/ingest_document.py`: MinIO to pipeline to embeddings to PostgreSQL for one uploaded document (direct execution mode; Airflow will call the same functions)
+* 6 unit tests for the embedding service (fake model), 2 unit tests and 8 integration tests for the chunk service (real PostgreSQL, small fake vectors)
+* 75 tests pass, Ruff is clean, CI is green
+
+### Result
 
 ```text
-google/embeddinggemma-300m
-→ 768 dimensions
+documents row + PDF in MinIO
+ ↓
+process_pdf (Docling, HybridChunker with the EmbeddingGemma tokenizer, clean)
+ ↓
+EmbeddingService  "title: <heading> | text: <chunk>"
+ ↓
+768-dimensional normalized vectors
+ ↓
+ChunkService → document_chunks (pgvector)
 ```
 
-The model is already downloaded in the Hugging Face cache on D:.
+Measured results:
 
-### Expected result
+* chunk size with the EmbeddingGemma tokenizer (same 512 budget, different tokenizer): Technical Report 49 → 31 chunks (average 688 → 1088 characters, 181 → 287 tokens); ISO 27001 72 → 58 chunks (691 → 858 characters, 136 → 169 tokens). The larger vocabulary fits more text into 512 tokens. No chunk exceeds 512 tokens.
+* our document format without a heading matches the model's own document prompt exactly (cosine similarity 1.0000); vectors have length 1.0000
+* speed on this CPU: 1.6 s per chunk for embeddings (58 ISO chunks in 94 s); the full ingestion of the 9-page Technical Report took 128 s for the pipeline plus 75 s for 31 embeddings, including model loading
+* similarity search with pgvector cosine distance on the stored Technical Report: in-scope questions retrieved the right chunk first (similarity 0.55 for tables, 0.58 for OCR); an unrelated question (vacation days) reached only 0.03 to 0.07
 
-```text
-Chunk
- ↓
-EmbeddingGemma
- ↓
-768-dimensional vector
- ↓
-pgvector
-```
+### Observations for later phases (not fixed)
+
+* dense search always returns the nearest chunks, even when the document cannot answer; the large gap between in-scope (above 0.5) and unrelated (below 0.1) scores is encouraging, but it was measured on three questions and one document
+* a bibliography chunk ranked second for the OCR question; reference lists may add noise
+* the second and third results of the table question were only loosely related; with 31 chunks in the document, top-3 includes weak matches
 
 ### Learning focus
 
@@ -360,9 +392,15 @@ pgvector
 
 Document chunks and user queries can consistently be converted into compatible vectors.
 
+**Met:** a real PDF was ingested end to end (31 chunks stored with pages, headings and 768-dimensional vectors), and queries embedded with the same model retrieved the correct chunks through pgvector cosine distance.
+
 ---
 
 # Phase 5 — Retrieval System
+
+### Status
+
+**Next**
 
 ### Objective
 
@@ -387,6 +425,14 @@ Top-K chunks
 * retrieval service
 * metadata preservation
 * basic retrieval testing
+
+### Notes from Phase 4
+
+* a throwaway check already proved the query: `DocumentChunk.embedding.cosine_distance(vector)` ordered ascending, joined to `documents` for the file name
+* the vectors are normalized, so cosine similarity is `1 - cosine_distance`
+* no vector index (HNSW or IVFFlat) is needed at this size; an exact scan is instant and an approximate index would only add approximation. Add one only if search time becomes measurable
+* the retrieval result should carry the document id, file name, page numbers, heading, text and similarity, so Phase 6 can build citations without another lookup
+* an optional filter by document is cheap now and useful later; add it only if a requirement appears
 
 ### Do NOT add yet
 
@@ -442,6 +488,8 @@ Citations
 * source/page citation output
 * basic refusal behavior when relevant information is unavailable
 
+Planning note: vector search never says "nothing found" by itself. Refusal needs either a similarity threshold, the model's own judgement from the prompt, or both. Choose it with evaluation data (Phase 7), not by guessing a number.
+
 ### Learning focus
 
 * LLM APIs
@@ -495,6 +543,18 @@ At minimum:
 
 Include questions that probe the known Phase 3 limitations (tables, wrongly labelled headings), so the evaluation shows whether they matter.
 
+Also include questions the documents cannot answer, including near misses on the same topic, so the refusal threshold has data behind it.
+
+### Experiments prepared by earlier phases
+
+Each of these is a small, measurable change; none should be made before the evaluation exists:
+
+* heading as the embedding title versus `none` (Phase 4 chose the heading; the evidence is three questions)
+* chunk size: 256, 512 or 1024 tokens (`MAX_CHUNK_TOKENS`; the Phase 4 switch to the EmbeddingGemma tokenizer already made chunks about 30 to 60% larger in text)
+* Docling's `repeat_table_header` option, for the lost-table-header limitation
+* excluding or down-weighting bibliography chunks
+* the similarity threshold for "not found"
+
 ### Use evaluation to identify weaknesses.
 
 Example:
@@ -539,9 +599,13 @@ Embed
 Store
 ```
 
-The DAG calls the existing Python pipeline functions (`app/pipeline/`).
+The DAG calls the existing Python functions: the pipeline in `app/pipeline/`, `EmbeddingService`, and `ChunkService`. `scripts/ingest_document.py` already chains them directly and is the blueprint for the DAG.
 
-Planning note: conversion takes about 10 s per page on CPU, so a 20-page PDF needs several minutes. Task timeouts and retries must allow for that.
+Planning notes:
+
+* conversion takes about 10 s per page on CPU, and embedding about 1.6 s per chunk, so a 9-page PDF needs about 3.5 minutes and a 20-page PDF several minutes. Task timeouts and retries must allow for that
+* the `documents.status` transitions (`uploaded → processing → processed | failed`) belong to this phase; today the ingestion script leaves the status unchanged
+* the Airflow worker needs the Hugging Face token (or a pre-downloaded model volume) for EmbeddingGemma
 
 ### Architecture
 
@@ -675,7 +739,11 @@ Make the application reproducible and portable.
 * persistent volumes
 * container networking
 
-Planning note: the application image now includes Docling and CPU PyTorch, so it will be large. Model downloads (Docling, EmbeddingGemma) need a persistent volume or a build-time step.
+Planning notes:
+
+* the application image now includes Docling, CPU PyTorch and sentence-transformers, so it will be large. Model downloads (Docling, EmbeddingGemma) need a persistent volume or a build-time step
+* EmbeddingGemma is gated: a build-time download or a runtime download needs `HF_TOKEN` as a secret, never baked into an image or committed
+* the embedding model loads once per process (about 5 to 10 s); the API must hold one shared `EmbeddingService`, not create one per request
 
 ### Verify
 
@@ -746,6 +814,11 @@ Docker application
  ↓
 EC2
 ```
+
+Planning notes:
+
+* the same Alembic migrations run on RDS; `CREATE EXTENSION vector` is supported on RDS PostgreSQL, but the pgvector version is set by the RDS engine version, so check it
+* EmbeddingGemma runs on the EC2 CPU: size the instance for the model (about 1.2 GB of weights) plus Docling
 
 ### Learning focus
 
@@ -902,6 +975,8 @@ The backend can store documents and metadata.
 
 ## Milestone 2 — AI Knowledge Pipeline
 
+**Reached** (end of Phase 4)
+
 After Phase 4:
 
 ```text
@@ -918,7 +993,7 @@ pgvector
 
 The system can transform documents into searchable semantic knowledge.
 
-Progress: the PDF → Docling → HybridChunker → clean chunks part is done (Phase 3). Embeddings and pgvector storage remain.
+Proof: a real PDF was ingested end to end with `scripts/ingest_document.py`, and a question embedded with the same model retrieved the correct chunk through pgvector.
 
 ---
 

@@ -102,7 +102,7 @@ Each directory should have a clear responsibility.
 
 New directories should only be introduced when a real requirement appears.
 
-### Implemented so far (end of Phase 3)
+### Implemented so far (end of Phase 4)
 
 ```text
 app/
@@ -120,16 +120,19 @@ app/
 │   └── errors.py      # exceptions and error handlers
 ├── db/
 │   ├── base.py        # SQLAlchemy declarative Base
-│   ├── models.py      # Document model
+│   ├── models.py      # Document, DocumentChunk, EMBEDDING_DIMENSIONS
 │   └── session.py     # SQLAlchemy engine, session factory, get_db
 ├── services/
 │   ├── info.py        # example application service
 │   ├── storage.py     # StorageService (boto3 → MinIO / S3)
-│   └── documents.py   # DocumentService (validate, store file, insert row)
-├── pipeline/          # document processing, independent of FastAPI and Airflow
+│   ├── documents.py   # DocumentService (validate, store file, insert row)
+│   ├── embeddings.py  # EmbeddingService (EmbeddingGemma: documents and queries)
+│   └── chunks.py      # ChunkService (store chunks + vectors in document_chunks)
+├── pipeline/          # document processing, independent of FastAPI, Airflow and the database
 │   ├── models.py      # Chunk (text, page_numbers, heading)
 │   ├── extract.py     # PDF → Docling document
-│   ├── chunk.py       # Docling document → Chunk list (table of contents dropped)
+│   ├── chunk.py       # Docling document → Chunk list (EmbeddingGemma tokenizer,
+│   │                  #   table of contents dropped)
 │   ├── clean.py       # cleaning rules (pure functions)
 │   └── process.py     # process_pdf(): extract → chunk → clean
 └── schemas/
@@ -141,14 +144,17 @@ app/
 migrations/
 ├── env.py             # Alembic setup (URL comes from Settings)
 ├── script.py.mako
-└── versions/          # generated migrations (excluded from Ruff)
+└── versions/          # migrations (excluded from Ruff)
+    ├── b475fddcd445_create_documents_table.py
+    └── 3f9a7c2d1e84_add_pgvector_and_document_chunks.py
 
 alembic.ini
 
 scripts/
 ├── storage_roundtrip.py   # manual upload/download/delete check against MinIO
 ├── explore_docling.py     # convert one PDF with Docling and print what it produced
-└── run_pipeline.py        # run the real process_pdf() on one PDF end to end
+├── run_pipeline.py        # run the real process_pdf() on one PDF end to end (no storing)
+└── ingest_document.py     # MinIO → pipeline → embeddings → PostgreSQL for one document
 
 tests/
 ├── unit/              # fakes, run everywhere including CI
@@ -157,7 +163,7 @@ tests/
 
 Scripts that import from `app` are run as modules from the project root, for example `uv run python -m scripts.run_pipeline`.
 
-The pipeline does not store anything yet: `process_pdf` returns a list of `Chunk` objects. Writing chunks to the database arrives in Phase 4, together with the `document_chunks` table.
+The upload endpoint does not call the pipeline yet. Today a document is ingested by running `scripts.ingest_document` (direct execution mode). Connecting upload to processing, and the status transitions, come with Airflow in Phase 8.
 
 ---
 
@@ -257,7 +263,7 @@ POST /api/v1/documents         upload a PDF: store the file, insert the row, ret
 GET  /api/v1/documents/{id}    read the metadata of one document
 ```
 
-No endpoint calls the pipeline yet. Connecting upload to processing comes with the pipeline's storage step in Phase 4 and with Airflow in Phase 8.
+No endpoint calls the pipeline, the embedding service or the chunk service yet. There is no question endpoint yet; it arrives with retrieval and RAG (Phases 5 and 6).
 
 ### Document endpoints
 
@@ -316,41 +322,49 @@ The document pipeline is responsible for converting a PDF into searchable knowle
 
 The pipeline should preserve useful document provenance.
 
-### Implemented in Phase 3
+### Implemented
 
-Everything up to the clean chunks is implemented in `app/pipeline/`:
+The chunks themselves are produced in `app/pipeline/` (Phase 3). Embedding and storing are application services (Phase 4), so the pipeline package stays free of the model, the database and the web framework:
 
 ```text
 PDF file
    │
    ▼
-extract_document        extract.py   Docling converter (created once, cached)
+extract_document        pipeline/extract.py   Docling converter (created once, cached)
    │
    ▼
-chunk_document          chunk.py     HybridChunker; drops table-of-contents chunks
-   │                                 (Docling label "document_index");
-   │                                 keeps page numbers and the nearest heading
+chunk_document          pipeline/chunk.py     HybridChunker with the EmbeddingGemma
+   │                                          tokenizer (512 tokens); drops table-of-
+   │                                          contents chunks (label "document_index");
+   │                                          keeps page numbers and the nearest heading
    ▼
-clean_chunks            clean.py     removes \x08 and \ufeff, removes the license
-   │                                 watermark line, drops chunks left empty
+clean_chunks            pipeline/clean.py     removes \x08 and \ufeff, removes the license
+   │                                          watermark line, drops chunks left empty
    ▼
-list[Chunk]             models.py    Chunk(text, page_numbers, heading)
+list[Chunk]             pipeline/models.py    Chunk(text, page_numbers, heading)
+   │
+   ▼
+EmbeddingService        services/embeddings.py   "title: <heading> | text: <chunk>"
+   │                                             → 768-dimensional vectors
+   ▼
+ChunkService            services/chunks.py       replace the document's rows in
+                                                 document_chunks (one transaction)
 ```
 
-`process_pdf(path)` in `process.py` runs the three stages in order. It does no storage or database work and imports no FastAPI or Airflow code.
+`process_pdf(path)` in `process.py` runs the first three stages in order. It does no storage or database work and imports no FastAPI or Airflow code. `scripts/ingest_document.py` chains the whole path for one uploaded document (download from storage, `process_pdf`, `embed_documents`, `replace_chunks`); Airflow tasks will call the same functions.
 
-The stages are small and separate so each can be tested alone. `clean.py` is pure (text in, text out). `chunk_document` accepts a chunker as an argument, so tests use fake chunks without loading any model.
+The stages are small and separate so each can be tested alone. `clean.py` is pure (text in, text out). `chunk_document` accepts a chunker as an argument, so tests use fake chunks without loading any model. `EmbeddingService` accepts a model, and `ChunkService` takes a database session, so each is tested with fakes or a real database without the other.
 
 ### What the chunk contains
 
 ```text
-Chunk
+Chunk (pipeline, in memory)
 ├── text            the chunk text
 ├── page_numbers    list of pages (a chunk can span pages, e.g. [2, 3])
 └── heading         nearest section heading, or None
 ```
 
-`document_id`, `chunk_index`, and `embedding` are added when chunks are stored (Phase 4). The schema comes from what Docling actually provides; see DECISIONS.md section 11.
+When stored, the row in `document_chunks` adds `document_id`, `chunk_index`, `embedding`, and timestamps (see section 8). The schema comes from what Docling actually provides; see DECISIONS.md section 11.
 
 ### Known behavior and limits
 
@@ -358,10 +372,10 @@ Chunk
 * Text inside pictures is almost never part of the chunks.
 * Tables become chunks of `row, column = value` text; a table can be split across chunks, and its header row can be lost.
 * Every heading is reported at level 1, so only the nearest heading is kept, and some headings are wrong or missing.
-* Speed on CPU is about 10 s per page once models are cached.
-* HybridChunker uses its default tokenizer for now (MiniLM). Phase 4 switches it to the EmbeddingGemma tokenizer and embeds the heading together with the text.
+* Speed on CPU is about 10 s per page for conversion, plus about 1.6 s per chunk for embeddings. A 9-page PDF takes about 3.5 minutes end to end.
+* With the EmbeddingGemma tokenizer the 512-token budget produces larger chunks than the Phase 3 tokenizer: 31 chunks (was 49) for the Technical Report and 58 (was 72) for ISO 27001.
 
-Details and reasoning are in DECISIONS.md section 11.
+Details and reasoning are in DECISIONS.md sections 11 and 12.
 
 ---
 
@@ -401,7 +415,7 @@ Document
 └── created_at      set by the database
 ```
 
-`status` is a plain string, not a PostgreSQL ENUM; the application enforces the allowed values.
+`status` is a plain string, not a PostgreSQL ENUM; the application enforces the allowed values. Nothing sets `processing`, `processed` or `failed` yet; that comes with orchestration in Phase 8.
 
 The database should not be used to store the original PDF binary unless there is a concrete reason to do so.
 
@@ -415,25 +429,36 @@ The primary database is:
 
 PostgreSQL stores both application data and vector embeddings.
 
-Conceptually:
-
 ```text
 PostgreSQL
 │
 ├── documents
 │
 ├── document_chunks
-│     ├── text
-│     ├── page_numbers
-│     ├── heading
-│     └── embedding
+│     ├── id             UUID, primary key
+│     ├── document_id    foreign key → documents.id, ON DELETE CASCADE
+│     ├── chunk_index    order of the chunk in the document
+│     ├── text           the chunk text
+│     ├── page_numbers   integer[] (a chunk can span pages)
+│     ├── heading        nearest section heading, nullable
+│     ├── embedding      vector(768), NOT NULL
+│     └── created_at
 │
-└── other application data
+│     UNIQUE (document_id, chunk_index)
+│
+└── alembic_version
 ```
 
-Today only `documents` (and Alembic's `alembic_version` table) exists. `document_chunks` and the pgvector extension arrive in Phase 4.
+Both tables exist (Phase 4). The `vector` extension (version 0.8.7 locally) is created by the migration `3f9a7c2d1e84`.
 
-pgvector provides vector similarity search.
+Design points:
+
+* Deleting a document deletes its chunks (cascade), so no orphan chunks exist.
+* The unique constraint prevents duplicate chunks when a document is processed twice; its index also serves "all chunks of a document".
+* `vector(768)` and `NOT NULL` make the database reject missing or wrong-sized vectors.
+* There is no vector index (HNSW or IVFFlat). With tens of chunks per document an exact scan is instant; an index is added only if search time becomes measurable.
+
+pgvector provides vector similarity search. Retrieval uses cosine distance (`cosine_distance` in SQLAlchemy through the `pgvector` package); the vectors are normalized, so similarity is `1 - distance`.
 
 The initial retrieval strategy uses dense vector similarity.
 
@@ -452,27 +477,39 @@ SQLAlchemy models (app/db/models.py)
         │
         ▼
 alembic revision --autogenerate   → migration script (read before applying)
-        │
+        │                            (written by hand when autogenerate cannot
+        │                             express it, e.g. CREATE EXTENSION)
         ▼
 alembic upgrade head              → PostgreSQL
 ```
 
 Models inherit from `Base` (`app/db/base.py`), which Alembic reads to know what the tables should look like. `migrations/env.py` takes the database URL from `Settings`, so `alembic.ini` holds no real credentials. The same migration history will run against RDS on AWS.
 
+Current history:
+
+```text
+b475fddcd445  create documents table
+      ↓
+3f9a7c2d1e84  add pgvector extension and document_chunks table   (head)
+```
+
 ---
 
 # 9. Embedding Architecture
 
-Embedding generation is handled through a dedicated embedding service.
+Embedding generation is handled through a dedicated embedding service (`app/services/embeddings.py`).
 
 ```text
 Document chunk
       │
       ▼
+"title: <heading or none> | text: <chunk text>"
+      │
+      ▼
 EmbeddingGemma
       │
       ▼
-768-dimensional vector
+768-dimensional vector (length 1)
       │
       ▼
 PostgreSQL + pgvector
@@ -488,24 +525,40 @@ Conceptually:
 ```text
 Document
    ↓
-EmbeddingGemma
+EmbeddingGemma  (document format)
    ↓
 Vector A
 
 
 Question
    ↓
-EmbeddingGemma
+EmbeddingGemma  (query prompt: "task: search result | query: ...")
    ↓
 Vector B
 ```
 
 The vectors can then be compared through pgvector similarity search.
 
-Two requirements come from Phase 3:
+### How the service works
 
-* HybridChunker must use the EmbeddingGemma tokenizer, so chunk size is measured by the model that embeds the chunk.
-* The text that is embedded is the contextualized chunk (heading plus text), not the raw chunk text.
+* `embed_documents(chunks)` returns one vector per chunk, in the same order. The text it embeds is built by `build_document_text` from our own `Chunk`, so the real heading fills the model's title slot. Without a heading the result equals the model's own document prompt.
+* `embed_query(question)` uses the model's query encoder, so questions and documents follow the formats the model was trained on.
+* The model loads on first use, on CPU, through `sentence-transformers`. Importing the module stays fast, and unit tests use a fake model.
+* When the model loads, the service checks that its output size equals the database column size (768) and raises a clear error otherwise.
+
+### Configuration
+
+The model is one setting, `EMBEDDING_MODEL_ID` (default `google/embeddinggemma-300m`). The chunker's tokenizer and the embedding service both read it, so chunk size is always measured by the model that embeds the chunk. Changing to a model with another vector size needs a new migration.
+
+### Access
+
+EmbeddingGemma is a gated Hugging Face model: accept the license and log in once (`uv run hf auth login`). The token is stored under `HF_HOME` (on D:), outside the repository. Deployments will need it as a secret (`HF_TOKEN`) or pre-downloaded models in a volume.
+
+### Storing
+
+`ChunkService.replace_chunks(document_id, chunks, vectors)` validates that the chunk and vector counts match and that every vector has 768 values, then deletes the document's old chunks and inserts the new ones in one transaction. A failure rolls back and leaves the old chunks in place.
+
+Phase 4 measurements: about 1.6 s per chunk on the development CPU; vectors have norm 1.0000.
 
 ---
 
@@ -544,6 +597,10 @@ More advanced approaches such as:
 * query expansion
 
 should only be added when evaluation demonstrates a need for them.
+
+Phase 4 proved the query shape with a throwaway check: order `document_chunks` by cosine distance to the query vector, join `documents` for the file name, take the top K. The retrieval service (Phase 5) returns, for each chunk: document ID, file name, page numbers, heading, text and similarity, so citations can be built without another lookup.
+
+Dense search always returns the nearest chunks, even when the document cannot answer the question. Deciding when to answer "not found" is not solved by retrieval alone (see DECISIONS.md 12.11); it is decided in Phases 6 and 7 with evaluation data.
 
 ---
 
@@ -592,11 +649,13 @@ The RAG service is responsible for:
 * processing the response
 * returning the answer and citation information
 
+The embedding model takes seconds to load, so the API will hold one shared `EmbeddingService` instance for all requests rather than creating one per request.
+
 ---
 
 # 12. Citation Architecture
 
-Citations are based on metadata preserved during document processing.
+Citations are based on metadata preserved during document processing and stored with each chunk.
 
 Conceptually:
 
@@ -653,15 +712,16 @@ Airflow is an orchestration layer, not the document-processing implementation.
 The actual processing functions live in:
 
 ```text
-app/pipeline/
+app/pipeline/        extract, chunk, clean
+app/services/        EmbeddingService, ChunkService
 ```
 
-Airflow tasks call these functions.
+Airflow tasks call these functions. `scripts/ingest_document.py` already chains them directly and is the blueprint for the DAG.
 
 This creates a separation:
 
 ```text
-Pipeline
+Pipeline and services
 = What work is performed
 
 Airflow
@@ -677,7 +737,7 @@ This is important for:
 * debugging
 * future orchestration changes
 
-Conversion takes about 10 s per page on CPU, so task timeouts and retries must allow for several minutes per document.
+Conversion takes about 10 s per page on CPU and embedding about 1.6 s per chunk, so task timeouts and retries must allow for several minutes per document. The Airflow worker also needs access to the gated embedding model (Hugging Face token or a pre-downloaded model volume). The `documents.status` transitions belong to this phase.
 
 ---
 
@@ -690,14 +750,16 @@ The system should support two conceptual execution modes.
 Used for fast development and testing.
 
 ```text
-FastAPI
+FastAPI or script
    │
    ▼
-Python pipeline
+Python pipeline + services
    │
    ▼
 Database / Storage
 ```
+
+Today this mode is `uv run python -m scripts.ingest_document <document_id>`.
 
 ### Orchestrated mode
 
@@ -710,7 +772,7 @@ FastAPI
 Airflow
    │
    ▼
-Python pipeline
+Python pipeline + services
    │
    ▼
 Database / Storage
@@ -777,17 +839,15 @@ External dependency:
 Gemini API
 ```
 
-EmbeddingGemma may run locally for embedding generation.
+EmbeddingGemma runs locally, on CPU, inside the application process (not as a separate service).
 
-The exact containerization strategy for the embedding component can be decided during implementation based on resource usage and development practicality.
-
-Currently, Docker Compose runs PostgreSQL + pgvector and MinIO, plus a one-time `minio-init` container that creates the `documents` bucket. The API runs on the host with `uvicorn`. Containerizing the application comes in Phase 11.
+Currently, Docker Compose runs PostgreSQL + pgvector (the `pgvector/pgvector:pg18` image) and MinIO, plus a one-time `minio-init` container that creates the `documents` bucket. The API, the pipeline and the embedding model run on the host. Containerizing the application comes in Phase 11.
 
 ### Local machine setup (Windows)
 
-* The project lives on D:. The uv cache and the Hugging Face cache are on D: as well (`UV_CACHE_DIR` and `HF_HOME` point to `D:\Backup\School\Project\_caches\...`), outside the repository, so they are never committed and C: stays free.
+* The project lives on D:. The uv cache and the Hugging Face cache are on D: as well (`UV_CACHE_DIR` and `HF_HOME` point to `D:\Backup\School\Project\_caches\...`), outside the repository, so they are never committed and C: stays free. The Hugging Face login token is stored there too.
 * PyTorch is the CPU-only build, installed from an explicit `pytorch-cpu` uv index declared in `pyproject.toml`.
-* Docling and PyTorch make the application image large, and Docling and EmbeddingGemma download models at first use. Phase 11 must give those models a persistent volume or a build-time download.
+* Docling, PyTorch and sentence-transformers make the application image large, and Docling and EmbeddingGemma download models at first use. Phase 11 must give those models a persistent volume or a build-time download, with the Hugging Face token as a secret.
 
 ---
 
@@ -827,6 +887,8 @@ Terraform
 
 The initial deployment should avoid unnecessary AWS services.
 
+The same Alembic migrations run on RDS; `CREATE EXTENSION vector` is supported on RDS PostgreSQL, but the pgvector version depends on the RDS engine version, so it must be checked. The EC2 instance must be sized for EmbeddingGemma (about 1.2 GB of weights) plus Docling.
+
 ---
 
 # 18. Environment Separation
@@ -854,7 +916,7 @@ Environment-specific values should not be hardcoded into application logic.
 
 Secrets and configuration should be supplied through environment variables or appropriate deployment configuration.
 
-In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) and uploads (`MAX_UPLOAD_MB`). The pipeline needs no settings yet.
+In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`), uploads (`MAX_UPLOAD_MB`) and the embedding model (`EMBEDDING_MODEL_ID`, which has a default and normally needs no `.env` entry). The Hugging Face token is not a setting: it is stored by `hf auth login` under `HF_HOME`, or supplied as `HF_TOKEN` in deployments.
 
 ---
 
@@ -880,9 +942,9 @@ Examples:
 * retrieval logic
 * citation formatting
 
-Unit tests replace dependencies (for example `get_db`, the storage client, or the whole document service) with fakes, so they run fast, need no database or MinIO, and work in CI.
+Unit tests replace dependencies (for example `get_db`, the storage client, the embedding model, or the whole document service) with fakes, so they run fast, need no database, MinIO or model, and work in CI.
 
-Pipeline tests follow the same rule: `test_pipeline_clean.py` (13 tests) uses the exact junk strings found in real PDFs, and `test_pipeline_chunk.py` (6 tests) uses a fake chunker, so no Docling model is loaded. The real Docling conversion is checked manually with `scripts/run_pipeline.py`, because it takes minutes.
+Pipeline tests follow the same rule: `test_pipeline_clean.py` (13 tests) uses the exact junk strings found in real PDFs, and `test_pipeline_chunk.py` (6 tests) uses a fake chunker, so no Docling model is loaded. `test_embedding_service.py` (6 tests) uses a fake model and checks the document format, the order of vectors, the query path, and the dimension check. `test_chunk_service.py` (2 tests) checks that bad input is rejected before anything is deleted. The real Docling conversion and the real embedding model are checked manually with `scripts/run_pipeline.py` and `scripts/ingest_document.py`, because they take minutes.
 
 ### Integration tests
 
@@ -896,7 +958,9 @@ Examples:
 * retrieval pipeline
 * API endpoints
 
-Integration tests use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable, so CI (which has neither) stays green. Each test removes only the rows and files it created.
+Integration tests use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable, so CI (which has neither) stays green. Each test removes only the rows and files it created. The chunk integration tests (8) use small fake vectors of the right size, so they need no embedding model, and they cover provenance round trip, replacement, empty replacement, cascade deletion, rejected input, an unknown document, and a failed commit that must keep the old chunks.
+
+At the end of Phase 4 the suite has 75 tests.
 
 The test strategy should remain proportional to the project's size.
 

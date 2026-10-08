@@ -99,7 +99,7 @@ Direct    Airflow
 Execution  Orchestration
 ```
 
-Implemented in Phase 3: `app/pipeline/` imports no FastAPI, Airflow, or database code (see section 11).
+Implemented in Phase 3: `app/pipeline/` imports no FastAPI, Airflow, or database code (see section 11). Phase 4 kept this: embedding and storing live in services (`app/services/`), not in the pipeline package (see section 12).
 
 ---
 
@@ -125,6 +125,8 @@ FastAPI → Airflow → Python Pipeline → Storage / Database
 * Keeps development fast.
 * Allows Airflow to provide production-style orchestration.
 * Avoids making the core application dependent on Airflow.
+
+Phase 4 implemented the direct mode as `scripts/ingest_document.py` (see 12.10).
 
 ---
 
@@ -156,11 +158,11 @@ Use `google/embeddinggemma-300m` for document and query embeddings.
 * Can run locally.
 * Avoids sending document content to a separate embedding API.
 * Provides a practical embedding model for semantic retrieval.
-* The tested model produces **768-dimensional embeddings**.
+* Produces **768-dimensional embeddings** (confirmed in Phase 4 against the model card and on the real model).
 
-The embedding model can be replaced later if evaluation shows that another model performs better.
+The embedding model can be replaced later if evaluation shows that another model performs better. The model name is one setting (`EMBEDDING_MODEL_ID`), and the database column size is tied to it (see 12.4).
 
-The model is already downloaded in the Hugging Face cache on D: (see 11.3).
+The model is gated on Hugging Face and needs a login (see 12.6). Its weights are in the Hugging Face cache on D: (see 11.3).
 
 ---
 
@@ -226,7 +228,9 @@ Docling's `HybridChunker` is used as the initial chunking strategy.
 
 Chunking strategy can be changed later based on retrieval evaluation.
 
-Phase 3 result: chunks averaged 447 to 687 characters, carried page numbers and headings, and skipped page headers and footers by themselves. It keeps a code block intact and writes table cells as `row, column = value`.
+Phase 3 result (with the default MiniLM tokenizer): chunks averaged 447 to 687 characters, carried page numbers and headings, and skipped page headers and footers by themselves. It keeps a code block intact and writes table cells as `row, column = value`.
+
+Phase 4 result: with the EmbeddingGemma tokenizer the same 512-token budget gives larger chunks (see 12.3).
 
 ---
 
@@ -243,6 +247,8 @@ Chunks must retain useful metadata such as document identity, page information, 
 * Allows the final answer to reference where information came from.
 
 The system should never treat the embedding as a replacement for provenance metadata.
+
+Phase 4 implemented this in the database: `document_chunks` stores the document ID, page numbers, and heading next to each vector (see 12.7).
 
 ---
 
@@ -261,6 +267,8 @@ PostgreSQL is used as the primary application database and pgvector is used for 
 * PostgreSQL is widely used in production systems.
 
 A dedicated vector database may be considered later if scale or requirements justify it.
+
+Phase 4 confirmed that chunks, provenance, and vectors fit in plain PostgreSQL tables (see 12.7).
 
 ---
 
@@ -626,7 +634,7 @@ Database schema changes are versioned Alembic migrations in `migrations/`, not `
 * One source of truth for configuration (`.env` / environment), as in decision 7.2.
 * Autogenerate is a draft, not a guarantee: it targets old-style typing and long lines that the lint rules reject, and hand-editing every future migration would be wasted effort.
 
-The `CREATE EXTENSION vector` migration is deferred to Phase 4, when pgvector is first needed.
+The `CREATE EXTENSION vector` migration was deferred to Phase 4, when pgvector was first needed. It is now done (see 12.7).
 
 ---
 
@@ -642,7 +650,7 @@ The `documents` table uses a UUID primary key generated in Python, a unique `sto
 * ENUM types are awkward to change in migrations; the application enforces the allowed values.
 * Phase 3 will show which extra fields (for example an error message or page count) are really needed.
 
-Phase 3 outcome: the pipeline did not need any new `documents` column. If Phase 4 or 8 needs an error message or page count, it is added then.
+Phase 3 outcome: the pipeline did not need any new `documents` column. Phase 4 did not need one either. If Phase 8 needs an error message or page count, it is added then.
 
 ---
 
@@ -714,6 +722,8 @@ Tests in `tests/integration/` use the real PostgreSQL and MinIO containers. They
 * Fakes cannot catch wrong column types, a broken unique constraint, or bad storage keys. Integration tests can.
 * Cleaning only what a test created keeps real local data safe.
 
+Phase 4 followed this for chunks: the `db` fixture deletes the documents a test created, and the database cascade removes their chunks (see 12.8).
+
 ---
 
 # 11. Document Processing Decisions (Phase 3)
@@ -760,18 +770,22 @@ Measured speed on this CPU once models are cached: about 10 s per page (88 s for
 
 Harmless side effect: Hugging Face warns that Windows has no symlink support, so its cache uses somewhat more space.
 
+Phase 4 note: the Hugging Face login token is saved under `HF_HOME` too, so it is also outside the repository (see 12.6).
+
 ---
 
 ## 11.4 Chunk Schema From What Docling Provides
 
 **Decision:**
-The pipeline's `Chunk` is a frozen dataclass with three fields: `text`, `page_numbers` (a list of ints), and `heading` (a string or `None`). `document_id` and `embedding` are not part of it yet: the document ID is attached when chunks are stored, and the embedding arrives in Phase 4.
+The pipeline's `Chunk` is a frozen dataclass with three fields: `text`, `page_numbers` (a list of ints), and `heading` (a string or `None`). `document_id` and `embedding` are not part of it: the document ID is attached when chunks are stored, and the embedding is produced by the embedding service.
 
 **Why:**
 
 * `chunk.meta.doc_items` carries page numbers per item, and `chunk.meta.headings` carries the headings. Nothing was invented.
 * Chunks can span pages (for example pages 2 and 3), so a single page number would be wrong for citations. A citation can show a range.
 * A plain dataclass keeps the pipeline free of Docling, FastAPI, and database types.
+
+Phase 4 kept this schema unchanged: `ChunkService` receives the document ID from its caller, and `EmbeddingService` returns plain lists of floats next to the chunk list.
 
 ---
 
@@ -799,7 +813,7 @@ The pipeline applies exactly these rules:
 
 **Why:**
 
-* The ISO PDF produced 156 chunks; 84 were table-of-contents lines with dot leaders, 95 contained control characters (84 of them in the table of contents), and 14 contained the watermark. After the rules, 72 chunks remain, with no dot leaders, watermarks or invisible characters.
+* The ISO PDF produced 156 chunks; 84 were table-of-contents lines with dot leaders, 95 contained control characters (84 of them in the table of contents), and 14 contained the watermark. After the rules, 72 chunks remain (measured with the MiniLM tokenizer; 58 with the EmbeddingGemma tokenizer, see 12.3), with no dot leaders, watermarks or invisible characters.
 * `\x08` is invisible in a UI but would end up in the database, in the embedded text, and in the prompt sent to Gemini.
 * The watermark appeared as body text on most pages and as a page footer on some, so it cannot be removed by content layer alone.
 * The watermark pattern requires a backtick so that an ordinary line of dashes is never removed (covered by a unit test).
@@ -817,7 +831,7 @@ Page headers and footers need no rule: Docling puts them in the `FURNITURE` laye
 
 * Docling labels the table of contents `document_index` (a 47-row table, 60,335 characters as Markdown), so a label check is more reliable than a text pattern.
 * Filtering after chunking is simpler and leaves Docling's objects untouched. It costs 84 chunks built and thrown away, which is negligible.
-* This is the likely source of the 16,494-token warning from the chunker.
+* This is the source of the very long table-of-contents chunk that triggers the chunker's token-length warning (16,494 tokens with MiniLM, 2,380 with the EmbeddingGemma tokenizer). The warning is harmless: the chunker only counts tokens, no model reads that text, and the chunk is dropped.
 * The rule only works when Docling detects the table of contents. A PDF whose contents page is not detected would keep its dot-leader chunks; Phase 7 evaluation or a new sample would show it.
 
 ---
@@ -865,17 +879,23 @@ These problems were found and are documented, not fixed:
 * Advanced table options or heavier models were rejected: the one real table was already acceptable, and no setting makes 5 pt screenshots readable.
 * Phase 7 evaluation will show whether any of these affect answers and citations. Questions about tables and mislabelled sections should be part of the evaluation dataset.
 
+Phase 4 note: because the heading is now part of the embedded text (12.2), a wrong heading can slightly mislead a vector. The Phase 7 experiment "heading versus `none`" tests this.
+
+Phase 4 also found a candidate fix to try in Phase 7: HybridChunker has a `repeat_table_header` option that repeats a table's header in every chunk of that table.
+
 ---
 
-## 11.11 HybridChunker Currently Uses the Wrong Tokenizer
+## 11.11 The Chunker and the Embedding Model Use the Same Tokenizer
 
 **Decision:**
-HybridChunker runs with its default tokenizer (`sentence-transformers/all-MiniLM-L6-v2`, 512-token limit) for now. In Phase 4 it is configured with the EmbeddingGemma tokenizer, and embeddings are computed from the contextualized chunk (heading plus text), not from the raw chunk text.
+HybridChunker measures chunk size with the tokenizer of the embedding model (`EMBEDDING_MODEL_ID`, EmbeddingGemma), with a 512-token budget. Implemented in Phase 4 (`app/pipeline/chunk.py`). How the text is formatted for embedding is decided in 12.2.
 
 **Why:**
 
-* Chunk size should be measured with the tokenizer of the model that embeds the chunks; token counts differ between tokenizers.
-* The MiniLM model is not used anywhere else, so its download (about 100 MB) is temporary.
+* Chunk size should be measured with the tokenizer of the model that embeds the chunks; token counts differ between tokenizers. The Docling documentation says the same.
+* The MiniLM tokenizer was used only during Phase 3 as HybridChunker's default and is not used anywhere else.
+
+The effect on chunk sizes is recorded in 12.3.
 
 ---
 
@@ -892,7 +912,227 @@ Sample PDFs and Docling output stay in `data/sample_docs/`, which is git-ignored
 
 ---
 
-# 12. Core Decision Rule
+# 12. Embedding Decisions (Phase 4)
+
+## 12.1 Check the Model Card Before Writing Code
+
+**Decision:**
+Before writing the embedding service, the model card, the installed packages, and the model's behavior on a few sentences were checked. Only then was code written.
+
+**Why:**
+
+* Three assumptions were open at the start of the phase: the prompts, the maximum input length, and the installed packages.
+* The model card answered them: queries and documents use different prompts, the input limit is 2048 tokens, vectors are 768-dimensional (smaller sizes are possible through Matryoshka truncation), and `float16` is not supported (use `float32` or `bfloat16`).
+* `sentence-transformers` and `transformers` were already installed (through Docling and earlier work), so no AI package had to be added. Only the small `pgvector` package was new (see 12.7).
+
+Two short checks confirmed the behavior on this machine: 768 dimensions, max sequence length 2048, normalized vectors (norm 1.0000), and the right document ranked first with and without prompts. With prompts the margin was larger (3 sentences only, an illustration, not evidence).
+
+---
+
+## 12.2 Embed `title: <heading> | text: <chunk>`, Built by Our Own Code
+
+**Decision:**
+A chunk is embedded as the string `title: {heading or "none"} | text: {chunk text}`. The string is built by `build_document_text` in `app/services/embeddings.py` from our own `Chunk`, and passed to the model's plain `encode`. Questions use the model's `encode_query`.
+
+**This replaces** the earlier plan (Phase 3 version of this decision) to embed `chunker.contextualize(chunk)`.
+
+**Options considered:**
+
+| | A. `chunker.contextualize(chunk)` | B. Build the string ourselves (chosen) |
+|---|---|---|
+| Where it happens | In the chunking stage, needs the raw Docling chunk | In the embedding stage, needs only our `Chunk` |
+| Effect on `Chunk` | Either pollutes `text` with the heading or needs a new field | None |
+| Pipeline independence | The embed stage would depend on Docling objects | The embed stage works on plain data |
+| Format | Docling's own (heading, newline, text) | The model's native `title: ... \| text: ...` |
+
+**Why B:**
+
+* The model was trained with a document prompt that has a title slot, and the model card says a real title improves quality.
+* The model's own `encode_document` always writes `title: none`, so it cannot carry our heading. Building the string ourselves can.
+* `Chunk` stays unchanged and the embedding stage stays independent of Docling (decisions 2.2 and 11.4).
+* Verified: without a heading, our string gives the same vector as the model's own `encode_document` (cosine similarity 1.0000).
+
+**Known trade-off:** some headings are wrong (11.10), and a wrong title can slightly mislead the vector. The Phase 7 experiment "heading versus `none`" will measure it.
+
+The stored `text` column holds the plain chunk text, not the formatted string. The formatted string is only what the model sees, and it is rebuilt from `heading` and `text` when needed.
+
+---
+
+## 12.3 Keep 512 Tokens; Chunks Became Larger
+
+**Decision:**
+`MAX_CHUNK_TOKENS` stays 512 after switching to the EmbeddingGemma tokenizer, even though the model accepts 2048. Chunk size is tuned later, with evaluation data.
+
+**What happened:**
+
+| Document | MiniLM (Phase 3) | EmbeddingGemma |
+|---|---|---|
+| Technical Report | 49 chunks, avg 688 chars, 181 tokens | 31 chunks, avg 1088 chars, 287 tokens |
+| ISO 27001 | 72 chunks, avg 691 chars, 136 tokens | 58 chunks, avg 858 chars, 169 tokens |
+
+Both rows were measured with the EmbeddingGemma tokenizer as the ruler. No chunk exceeds 512 tokens.
+
+**Why:**
+
+* MiniLM has a small vocabulary and splits text into many tokens; EmbeddingGemma has a much larger one. The same 512-token budget therefore holds 30 to 60% more text.
+* An average of 170 to 290 tokens is a normal RAG chunk size and far below the model's 2048 limit.
+* There is no evidence that a different size is better. Chunk size (for example 256 versus 512 versus 1024) is a Phase 7 experiment and a one-line change.
+
+Earlier statements that the switch would "keep chunks close to Phase 3" were wrong; the number stayed the same but the amount of text did not.
+
+---
+
+## 12.4 One Model Setting, One Dimension Check
+
+**Decision:**
+The embedding model is the single setting `EMBEDDING_MODEL_ID` (default `google/embeddinggemma-300m`), read by both the chunker tokenizer and the embedding service. `EmbeddingService` checks the model's output size against `EMBEDDING_DIMENSIONS` (768, defined next to the database model) when the model loads, and raises a clear error if they differ.
+
+**Why:**
+
+* The chunker's tokenizer and the embedding model must always be the same model (11.11). One setting prevents two copies from drifting apart.
+* The database column is `vector(768)`. Setting a different model in the environment would otherwise fail later with a confusing database error.
+* Changing to a model with another size needs a new migration. The check makes that visible immediately.
+
+---
+
+## 12.5 EmbeddingService: Lazy Loading, CPU, Separate Methods
+
+**Decision:**
+`EmbeddingService` (`app/services/embeddings.py`) has `embed_documents(chunks)` and `embed_query(question)`. The model is loaded on first use, on CPU. The constructor accepts a model, so unit tests pass a fake.
+
+**Why:**
+
+* Importing `sentence_transformers` loads torch, which takes seconds. Lazy loading keeps imports and unit tests fast and lets CI run without the model.
+* Documents and queries need different formats (12.2), so they are separate methods and the caller cannot mix them up.
+* The GTX 1050 (4 GB) is not used; the model is small and the CPU is enough (1.6 s per chunk).
+* The 6 unit tests use a fake model; no download is needed.
+
+Planning notes (not done yet): the model takes seconds to load, so the API must hold one shared instance when the retrieval endpoint exists (Phase 6), not create one per request.
+
+Measured speed: 58 ISO chunks in 94 s (1.6 s per chunk); 31 chunks of the Technical Report in 75 s including model loading.
+
+---
+
+## 12.6 The Gated Model Needs a Hugging Face Login
+
+**Decision:**
+EmbeddingGemma requires accepting Google's license and logging in (`uv run hf auth login`). The token lives under `HF_HOME` on D:, outside the repository.
+
+**Why:**
+
+* Loading the weights through `transformers` had worked earlier, but `sentence-transformers` also downloads small module files (for example `4_Normalize/config.json`), and the gated repository answered those requests with 401 until a login existed.
+* The fix is authentication, not code. It downloads only a few tiny files, not the 1.2 GB weights again.
+
+Consequences for later phases (recorded in ROADMAP.md):
+
+* Docker image and Airflow worker (Phases 8 and 11): `HF_TOKEN` as a secret in the environment, or models pre-downloaded into a volume. Never baked into an image or committed.
+* AWS (Phase 12): the same, through the deployment's secret mechanism.
+* CI never needs it, because tests use fakes and the model loads lazily.
+
+---
+
+## 12.7 The `document_chunks` Table
+
+**Decision:**
+Migration `3f9a7c2d1e84` enables pgvector (`CREATE EXTENSION IF NOT EXISTS vector`) and creates `document_chunks`:
+
+* `id`: UUID primary key, generated in Python (same pattern as `documents`)
+* `document_id`: foreign key to `documents.id` with `ON DELETE CASCADE`
+* `chunk_index`: integer, the chunk's order in the document
+* `text`: the chunk text
+* `page_numbers`: PostgreSQL `integer[]`
+* `heading`: text, nullable
+* `embedding`: `vector(768)`, NOT NULL
+* `created_at`: set by the database
+* a unique constraint on `(document_id, chunk_index)`
+
+No vector index (HNSW or IVFFlat) is created.
+
+**Why:**
+
+* Cascade: deleting a document removes its chunks, so no orphans are possible. Tested against the real database.
+* `integer[]` stores the page range of a chunk without a join table (chunks can span pages).
+* `NOT NULL` plus `vector(768)`: the database rejects a missing or wrong-sized vector, which implements "vector dimension validation" with no extra code.
+* The unique constraint stops duplicate chunks when a document is processed twice. Its index also serves "all chunks of a document", so a separate index would be redundant.
+* No vector index: with about 30 to 60 chunks per document an exact scan is instant. An approximate index would make results approximate for no benefit. It is added only if search time becomes measurable.
+* The migration was written by hand (autogenerate does not produce `CREATE EXTENSION`) and read before it was applied. `upgrade` creates the extension first, then the table; `downgrade` does the reverse. A downgrade and upgrade round trip was verified. RDS PostgreSQL supports the same `CREATE EXTENSION`, so the migration will run there too (Phase 12).
+* The `pgvector` Python package provides the `Vector` column type and `cosine_distance`. It is a small package; the database extension is separate.
+
+The pre-commit secret scanner flagged the random hex revision IDs of the migration as a possible secret. The fix is an inline `# pragma: allowlist secret` comment on those two lines, not a rule that disables the scanner for the whole migrations folder, so a real secret pasted into a migration would still be caught.
+
+---
+
+## 12.8 ChunkService: Replace in One Transaction, Validate First
+
+**Decision:**
+`ChunkService.replace_chunks(document_id, chunks, vectors)` (`app/services/chunks.py`):
+
+1. Validates that the number of chunks equals the number of vectors and that every vector has 768 values. A mismatch raises `ValueError` before anything is touched.
+2. Raises `NotFoundError` if the document does not exist.
+3. Deletes the document's old chunks and inserts the new ones in one transaction. Any failure rolls back, so the old chunks survive.
+4. Returns how many chunks were stored. An empty list clears the document's chunks.
+
+The document ID comes from the caller; `documents.status` is not changed.
+
+**Why:**
+
+* Replace, not append: processing a document twice must not create duplicates, and a half-written document must never be visible.
+* A count or size mismatch is a bug in the caller, not a user error, so it is a `ValueError`, not an API error.
+* A clear `NotFoundError` is better than a foreign-key error from the database.
+* Embedding (the model) and storing (the database) are different responsibilities. Separate services keep the storage code testable without loading the model.
+* The status transitions (`uploaded → processing → processed | failed`) belong to orchestration (Phase 8).
+
+Tests: 2 unit tests (input rejected before anything is deleted) and 8 integration tests on the real PostgreSQL with small fake vectors: provenance and vectors round trip, replace removes old chunks, empty replacement, cascade on document deletion, rejected input keeps old chunks, unknown document, failed commit keeps old chunks, one row per `(document, chunk_index)`. The failed-commit test is the one that proves the transaction behavior.
+
+---
+
+## 12.9 Cosine Distance on Normalized Vectors
+
+**Decision:**
+Similarity search uses pgvector's cosine distance. Similarity is reported as `1 - cosine_distance`.
+
+**Why:**
+
+* The model outputs vectors of length 1.0000, so cosine similarity and dot product rank identically.
+* Cosine is the standard choice and stays correct if the embedding model is replaced by one that does not normalize.
+
+The query shape was proven with a throwaway check (not application code): order by `DocumentChunk.embedding.cosine_distance(query_vector)`, join to `documents` for the file name. The real retrieval service is Phase 5.
+
+---
+
+## 12.10 Direct Ingestion Script, No New Service Class
+
+**Decision:**
+`scripts/ingest_document.py <document_id>` runs the whole chain for an uploaded document: download the PDF from storage, `process_pdf`, `embed_documents`, `replace_chunks`. It is kept in the repository. It does not change `documents.status`, and there is no "ingestion service" class.
+
+**Why:**
+
+* It is the direct execution mode of decision 2.3, and the blueprint for the Phase 8 Airflow tasks, which will call the same functions.
+* A script that chains four calls does not need a class yet (ENGINEERING_PRINCIPLES 14).
+* Running it again replaces the chunks, so it is safe to repeat.
+
+Verified on the Technical Report: 31 chunks stored (the same count as the earlier comparison), 768 dimensions on every row, a chunk spanning pages `{1,2}` stored correctly as an array. Timing: 128 s for the pipeline plus 75 s for embeddings.
+
+---
+
+## 12.11 Dense Search Never Says "Not Found"
+
+**Observation (not a decision to fix yet):**
+Vector search always returns the nearest chunks, even when the document cannot answer.
+
+Measured on the stored Technical Report with three questions:
+
+* in-scope, tables: top similarity 0.55 (correct chunk first);
+* in-scope, OCR: top similarity 0.58 (correct chunk first, a bibliography chunk second at 0.43);
+* unrelated (vacation days): top similarity 0.07.
+
+**Why this matters:** refusing to answer needs a similarity threshold, the LLM's own judgement from the prompt, or both. The gap between in-scope and unrelated scores is encouraging, but it was measured on three questions and one document, so no threshold is chosen now. The threshold and the refusal behavior are set with evaluation data in Phases 6 and 7, including questions the documents cannot answer and near-miss questions on the same topic.
+
+Other observations carried to Phase 7: bibliography chunks can rank high for questions that mention a cited tool; the second and third results of a question can be only loosely related when a document has few chunks.
+
+---
+
+# 13. Core Decision Rule
 
 When considering a new technology, feature, or architectural change, ask:
 
