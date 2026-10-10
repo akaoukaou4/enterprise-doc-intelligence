@@ -180,6 +180,8 @@ Initial retrieval uses vector similarity search with pgvector.
 
 Hybrid retrieval, reranking, or other techniques will only be added if evaluation demonstrates a need.
 
+Implemented in Phase 5 as `RetrievalService` (see section 13).
+
 ---
 
 ## 3.4 RAG Must Be Evaluated Before Optimization
@@ -248,7 +250,7 @@ Chunks must retain useful metadata such as document identity, page information, 
 
 The system should never treat the embedding as a replacement for provenance metadata.
 
-Phase 4 implemented this in the database: `document_chunks` stores the document ID, page numbers, and heading next to each vector (see 12.7).
+Phase 4 implemented this in the database: `document_chunks` stores the document ID, page numbers, and heading next to each vector (see 12.7). Phase 5 carries it out of the database: every search result keeps the document ID, file name, pages and heading (see 13.1).
 
 ---
 
@@ -268,7 +270,7 @@ PostgreSQL is used as the primary application database and pgvector is used for 
 
 A dedicated vector database may be considered later if scale or requirements justify it.
 
-Phase 4 confirmed that chunks, provenance, and vectors fit in plain PostgreSQL tables (see 12.7).
+Phase 4 confirmed that chunks, provenance, and vectors fit in plain PostgreSQL tables (see 12.7). Phase 5 confirmed that one SQL query (cosine distance joined to `documents`) is enough for retrieval (see 13.1).
 
 ---
 
@@ -575,6 +577,8 @@ Routes handle HTTP only. Application logic lives in services (`app/services/`), 
 
 No base classes or generic abstractions are used until a real need appears.
 
+Phase 5 followed the pattern: the search route is three lines and calls `RetrievalService` (see 13.2).
+
 ---
 
 ## 9.7 Optional Database URL and Lazy Engine
@@ -650,7 +654,7 @@ The `documents` table uses a UUID primary key generated in Python, a unique `sto
 * ENUM types are awkward to change in migrations; the application enforces the allowed values.
 * Phase 3 will show which extra fields (for example an error message or page count) are really needed.
 
-Phase 3 outcome: the pipeline did not need any new `documents` column. Phase 4 did not need one either. If Phase 8 needs an error message or page count, it is added then.
+Phase 3 outcome: the pipeline did not need any new `documents` column. Phase 4 did not need one either, and neither did Phase 5. If Phase 8 needs an error message or page count, it is added then.
 
 ---
 
@@ -722,7 +726,7 @@ Tests in `tests/integration/` use the real PostgreSQL and MinIO containers. They
 * Fakes cannot catch wrong column types, a broken unique constraint, or bad storage keys. Integration tests can.
 * Cleaning only what a test created keeps real local data safe.
 
-Phase 4 followed this for chunks: the `db` fixture deletes the documents a test created, and the database cascade removes their chunks (see 12.8).
+Phase 4 followed this for chunks: the `db` fixture deletes the documents a test created, and the database cascade removes their chunks (see 12.8). Phase 5 followed it for retrieval: the test document is created and deleted by a fixture, and the real Technical Report in the database is never touched (see 13.8).
 
 ---
 
@@ -1007,7 +1011,7 @@ The embedding model is the single setting `EMBEDDING_MODEL_ID` (default `google/
 * The GTX 1050 (4 GB) is not used; the model is small and the CPU is enough (1.6 s per chunk).
 * The 6 unit tests use a fake model; no download is needed.
 
-Planning notes (not done yet): the model takes seconds to load, so the API must hold one shared instance when the retrieval endpoint exists (Phase 6), not create one per request.
+The API now holds one shared instance for all requests (done in Phase 5, see 13.3).
 
 Measured speed: 58 ISO chunks in 94 s (1.6 s per chunk); 31 chunks of the Technical Report in 75 s including model loading.
 
@@ -1096,7 +1100,7 @@ Similarity search uses pgvector's cosine distance. Similarity is reported as `1 
 * The model outputs vectors of length 1.0000, so cosine similarity and dot product rank identically.
 * Cosine is the standard choice and stays correct if the embedding model is replaced by one that does not normalize.
 
-The query shape was proven with a throwaway check (not application code): order by `DocumentChunk.embedding.cosine_distance(query_vector)`, join to `documents` for the file name. The real retrieval service is Phase 5.
+The query shape was proven in Phase 4 with a throwaway check: order by `DocumentChunk.embedding.cosine_distance(query_vector)`, join to `documents` for the file name. The real retrieval service is in Phase 5 (see 13.1).
 
 ---
 
@@ -1130,9 +1134,184 @@ Measured on the stored Technical Report with three questions:
 
 Other observations carried to Phase 7: bibliography chunks can rank high for questions that mention a cited tool; the second and third results of a question can be only loosely related when a document has few chunks.
 
+Phase 5 reproduced the same numbers through the API and added no new observation that changes this decision (see 13.9).
+
 ---
 
-# 13. Core Decision Rule
+# 13. Retrieval Decisions (Phase 5)
+
+## 13.1 RetrievalService Returns Plain Objects, Not Database Rows
+
+**Decision:**
+`RetrievalService.search(question, top_k)` (`app/services/retrieval.py`) embeds the question with `EmbeddingService.embed_query`, runs one pgvector query, and returns a list of `RetrievedChunk`. `RetrievedChunk` is a frozen dataclass with `document_id`, `filename`, `page_numbers`, `heading`, `text` and `similarity`. The query orders `document_chunks` by cosine distance to the query vector, joins `documents` for the file name, and takes the top K. The service takes the database session and the embedding service as constructor arguments.
+
+**Options considered:**
+
+| | A. Plain result object (chosen) | B. Return `DocumentChunk` rows |
+|---|---|---|
+| What the caller receives | Only the fields it needs | The whole ORM object, including the 768-number vector |
+| Coupling | None to SQLAlchemy | Every caller depends on the database layer |
+| File name for citations | Included (joined in the query) | A second lookup per hit |
+| Testing callers | Build a dataclass | Build ORM objects |
+
+**Why A:**
+
+* Phase 6 builds citations from exactly these fields, so it needs no second lookup. This implements decision 4.3 (provenance) on the way out of the database.
+* The vector is never needed after the search, and callers should not see it.
+* It follows the same idea as 11.4: plain dataclasses between layers. The API gets its own Pydantic schema, as with `DocumentResponse`.
+* This is a common industry pattern (services return their own data types instead of database rows); small projects sometimes skip it, so it is a trade-off, not a law.
+
+The same service takes a fake embedding service in tests, so ranking can be tested with hand-made vectors and no model (see 13.8).
+
+---
+
+## 13.2 A `POST /api/v1/search` Inspection Endpoint
+
+**Decision:**
+`POST /api/v1/search` accepts `{question, top_k}` and returns `{results: [...]}`, where each result has the `RetrievedChunk` fields. The route is thin (9.6): it calls `RetrievalService` and converts the results to the Pydantic response. It is an inspection endpoint, not the product's question endpoint; the answer endpoint (`/ask`) arrives in Phase 6 and does not replace it.
+
+**Why:**
+
+* Without it, retrieval could only be tried from a script. With it, a question can be typed into `/docs` and the chunks seen at once.
+* It supports ENGINEERING_PRINCIPLES 19 (debug the root cause): when a later answer is bad, the same question can be sent to `/search` to see whether retrieval or generation is at fault.
+* It costs about 30 lines. The Phase 9 UI or the Phase 7 evaluation can reuse it.
+* It is a POST because the question travels in the request body.
+
+It was optional, and was added because it gives the first real end-to-end check of Phase 5 through the API.
+
+---
+
+## 13.3 One Shared EmbeddingService, Loaded Lazily, Behind a Plain `def` Route
+
+**Decision:**
+`app/api/deps.py` provides `get_embedding_service`, decorated with `lru_cache`, so the process creates one `EmbeddingService`. The model inside it still loads on first use (12.5), so the first search pays the loading time. The search route is a plain `def`, not `async def`.
+
+**Options considered for loading time:**
+
+| | Lazy (chosen) | Preload at startup |
+|---|---|---|
+| Server start | Instant; `/health` and tests are unaffected | Seconds slower; fails early if the Hugging Face login or model is missing |
+| First search | Slower, once | Fast |
+| Tests and CI | No change | Every `create_app()` would need a model override |
+
+**Why lazy:**
+
+* It keeps startup, `/health` and every existing test simple.
+* Preloading only matters when the container health check and startup behavior are designed. It is revisited in Phase 11, where it becomes a real question.
+
+**Why one instance:** the model takes seconds to load and uses memory, so it must never be created per request.
+
+**Why `def` and not `async def`:** embedding is blocking CPU work. In an `async def` route it would freeze the event loop and stop every other request. FastAPI runs `def` routes in a thread pool, so the server stays responsive. The document routes already use `def` for the same reason.
+
+**Known trade-offs:**
+
+* Two simultaneous first requests could both load the model, because there is no lock. For one developer this only wastes time, so no locking code is added (ENGINEERING_PRINCIPLES 3).
+* Measured: the first request took about 22 s (not the 5 to 10 s estimated earlier). The load makes about 15 requests to huggingface.co to check for updates even though the files are cached. In Phase 11 the containers should run offline with the model pre-downloaded.
+* `uvicorn --reload` restarts the process on code changes, so the model loads again on the next first search.
+
+---
+
+## 13.4 Input Limits: `top_k` 1 to 20 (Default 5), Question 1 to 1000 Characters
+
+**Decision:**
+`top_k` defaults to 5 and must be between 1 and 20. The question is stripped of surrounding whitespace and must be between 1 and 1000 characters.
+
+**Why:**
+
+* Without a maximum `top_k`, a client could ask for 100,000 chunks and slow the database.
+* An empty question cannot be embedded in a useful way.
+* The model accepts up to 2048 tokens, so 1000 characters is a safe, simple guard.
+* The numbers are guesses, not measurements (ENGINEERING_PRINCIPLES 12). They are listed as Phase 7 experiments (ROADMAP.md): the right `top_k` depends on how many chunks the prompt should carry, which only evaluation can show.
+
+An empty database or a question with no match returns an empty list, not an error.
+
+---
+
+## 13.5 Limits Live in the Service; Two Layers Check Them
+
+**Decision:**
+`DEFAULT_TOP_K`, `MAX_TOP_K` and `MAX_QUESTION_CHARS` are constants in `app/services/retrieval.py`. The Pydantic schemas in `app/schemas/search.py` import them, and the request model strips whitespace before checking length. The API therefore rejects bad input with `422 validation_failed` (the standard error shape, through the existing validation handler) before the service runs. The service validates again and raises `ValueError`.
+
+**Why:**
+
+* The limits are defined once, so the API and the service cannot drift apart.
+* The API check gives users a clean 422. The service check protects the service from other callers (a script, the Phase 6 RAG service, Airflow).
+* A bad value reaching the service is a bug in the caller, not a user mistake, so it is a `ValueError`, the same rule as 12.8.
+
+Known gap: `ValueError` is not mapped to an HTTP error. Through `/search` it cannot happen, because the schema checks first. A future endpoint that skips the schema would return a generic 500. This is accepted until such an endpoint exists.
+
+---
+
+## 13.6 Stable Ordering With Tie-Breakers
+
+**Decision:**
+The query orders by distance, then `document_id`, then `chunk_index`.
+
+**Why:**
+
+* If two chunks have exactly the same distance, the database may return them in any order, and the order can change between runs.
+* A stable order makes tests and later evaluation repeatable (ROADMAP Phase 7 exit condition).
+* It costs nothing, and does not change the result when distances differ.
+
+---
+
+## 13.7 Still Deferred: Threshold, Document Filter, Vector Index, Hybrid Search
+
+**Decision:**
+Phase 5 adds none of these:
+
+* **Similarity threshold for "not found":** chosen with evaluation data (Phases 6 and 7), as decided in 12.11. The service returns the similarity of every hit, so the threshold can be applied later without changing the service's shape.
+* **Filter by document:** no requirement exists; it is a small change if one appears.
+* **HNSW or IVFFlat index:** an exact scan is instant at tens of chunks per document, and an index would make results approximate for no benefit (12.7).
+* **Hybrid search, reranking, query expansion:** only if evaluation shows dense retrieval fails (decisions 3.3 and 3.4).
+
+**Why:**
+
+* "Evaluate before optimizing" (ENGINEERING_PRINCIPLES 11): the only data so far is three questions on one document.
+
+---
+
+## 13.8 Tests: Hand-Made Vectors, and Test Files Need Unique Names
+
+**Decision:**
+The retrieval service is tested at three levels:
+
+* 7 unit tests (parametrized) check that an empty or too long question and a `top_k` outside 1 to 20 are rejected before the database or the model is touched (`None` stands in for both).
+* 3 integration tests use the real PostgreSQL with a fake embedding service and three hand-made unit vectors: A (same direction as the query, similarity 1.0), B (45 degrees away, similarity 0.7071) and C (orthogonal, similarity 0.0). They check the ranking, the full provenance round trip (document ID, file name, pages, heading including `None`), `top_k`, and that the question is stripped before embedding.
+* 8 unit tests for the endpoint use a fake retrieval service: response fields, the default `top_k`, trimming, and six invalid bodies that must return `422` with the standard error shape and never reach the service.
+
+**Why:**
+
+* Hand-made vectors give a known ranking without loading the model, so the test checks the SQL, not the model.
+* The real Technical Report stays in the database during the tests. The integration test only asserts that A and B come first, which a real chunk cannot beat against a one-axis query vector, and its fixture deletes only its own document (10.8).
+* The real model is checked manually through the running API (13.9).
+
+**Rule found in Phase 5:** the `tests/` folders have no `__init__.py`, so pytest identifies a test module by its file name alone. Two files with the same name in `tests/unit/` and `tests/integration/` make collection fail with "import file mismatch". Every test file name must therefore be unique across all of `tests/`. The integration file is named `test_retrieval_integration.py` for this reason.
+
+The suite has 93 tests at the end of Phase 5 (75 + 10 + 8).
+
+---
+
+## 13.9 Measured on the Real Model
+
+**Observation:**
+Through the running API, with the real EmbeddingGemma model on the stored Technical Report (31 chunks):
+
+| Question | Top result | Similarity |
+|---|---|---|
+| How does Docling recognize the structure of tables? | Table Structure Recognition, pages 3-4 | 0.5499 |
+| Which OCR engine can be used for scanned pages? | OCR, page 4 | 0.5792 |
+| How many vacation days do employees get? (not answerable) | Performance table, page 5 | 0.0692 |
+
+* All three numbers equal the Phase 4 throwaway check to four digits, so the service, the endpoint and the shared model reproduce what was measured by hand.
+* Table question: the top three scores were 0.550, 0.545 and 0.531. The second hit (Applications) mentions table structure recognition in passing and the third (Abstract) is general, so the gap between a good and a weak match can be small. Whether the ranking among the top chunks is good enough is a Phase 7 question.
+* OCR question: the References chunk ranked second (0.43). The bibliography noise seen in Phase 4 is confirmed.
+* Unanswerable question: three chunks were still returned, all below 0.07.
+* Still only three questions on one document: this is a smoke test, not evidence for a threshold.
+
+---
+
+# 14. Core Decision Rule
 
 When considering a new technology, feature, or architectural change, ask:
 

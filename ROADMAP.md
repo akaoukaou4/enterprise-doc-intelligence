@@ -338,7 +338,7 @@ Chunking:
 Database:
 
 * migration `3f9a7c2d1e84`: `CREATE EXTENSION vector` and the `document_chunks` table (document_id foreign key with `ON DELETE CASCADE`, chunk_index, text, `page_numbers integer[]`, heading, `embedding vector(768)`, created_at)
-* unique constraint on `(document_id, chunk_index)`; no vector index yet (see Phase 5 notes)
+* unique constraint on `(document_id, chunk_index)`; no vector index (see Phase 5 notes)
 * verified with a downgrade and upgrade round trip
 
 Services:
@@ -400,46 +400,75 @@ Document chunks and user queries can consistently be converted into compatible v
 
 ### Status
 
-**Next**
+**Complete**
 
 ### Objective
 
 Retrieve the most relevant document chunks for a user question.
 
-### Build
+### Approach
+
+The design questions were settled before any code was written: what the search returns, whether to add an endpoint, how to share the embedding model, and which input limits to use (DECISIONS.md section 13). The service was built and tested first (Step 1), then the API on top of it (Step 2), and finally the real model was checked through the running API against the numbers measured by hand in Phase 4.
+
+### Completed
+
+Service:
+
+* `RetrievalService.search(question, top_k)` in `app/services/retrieval.py`: validates the input, embeds the question with `EmbeddingService.embed_query`, runs the pgvector cosine query and returns `RetrievedChunk` objects
+* `RetrievedChunk` is a small frozen dataclass: `document_id`, `filename`, `page_numbers`, `heading`, `text`, `similarity`. It carries everything a citation needs, so Phase 6 needs no second lookup, and callers never see database rows or raw vectors
+* similarity is `1 - cosine_distance`; ties are broken by `document_id` and `chunk_index`, so the order is stable
+* limits as constants in the service (`DEFAULT_TOP_K = 5`, `MAX_TOP_K = 20`, `MAX_QUESTION_CHARS = 1000`); the question is stripped, an empty or too long question and a `top_k` outside 1 to 20 raise `ValueError`
+
+API:
+
+* `POST /api/v1/search` (`app/api/v1/search.py`): request `{question, top_k}`, response `{results: [SearchHit]}`. It is an inspection endpoint: it shows what retrieval returns, so a bad answer can later be traced to retrieval or to generation
+* Pydantic schemas in `app/schemas/search.py` import the same limits from the service; invalid input returns `422` with the standard error shape
+* the route is a plain `def`, so FastAPI runs the blocking embedding work in a thread pool
+* `app/api/deps.py`: one shared `EmbeddingService` (`get_embedding_service`, cached with `lru_cache`, the model loads on the first search) and `RetrievalServiceDep`
+
+Not added, on purpose (nothing requires them yet): similarity threshold, document filter, HNSW/IVFFlat index, hybrid search, reranking, query expansion.
+
+Tests:
+
+* 7 unit tests for input validation (parametrized), no database or model
+* 3 integration tests on the real PostgreSQL with a fake embedding service and three hand-made vectors (similarity 1.0, 0.7071 and 0.0): ranking, provenance round trip, `top_k`, and question stripping
+* 8 unit tests for the endpoint with a fake service: response fields, default `top_k`, and six invalid bodies returning `422`
+* 93 tests pass, Ruff is clean, CI is green
+
+### Result
 
 ```text
-Question
+POST /api/v1/search {"question": "...", "top_k": 3}
  ↓
-Query embedding
+RetrievalService
  ↓
-pgvector similarity search
+EmbeddingService.embed_query  (shared instance, model loads on first use)
  ↓
-Top-K chunks
+pgvector cosine search  (document_chunks JOIN documents, top K)
+ ↓
+RetrievedChunk: document_id, filename, page_numbers, heading, text, similarity
 ```
 
-### Build initially
+### Measured results
 
-* cosine/distance-based similarity
-* Top-K retrieval
-* retrieval service
-* metadata preservation
-* basic retrieval testing
+Through the running API with the real model, on the stored Technical Report (31 chunks):
 
-### Notes from Phase 4
+| Question | Top result | Similarity |
+|---|---|---|
+| How does Docling recognize the structure of tables? | Table Structure Recognition, pages 3-4 | 0.5499 |
+| Which OCR engine can be used for scanned pages? | OCR, page 4 | 0.5792 |
+| How many vacation days do employees get? (not answerable) | Performance table, page 5 | 0.0692 |
 
-* a throwaway check already proved the query: `DocumentChunk.embedding.cosine_distance(vector)` ordered ascending, joined to `documents` for the file name
-* the vectors are normalized, so cosine similarity is `1 - cosine_distance`
-* no vector index (HNSW or IVFFlat) is needed at this size; an exact scan is instant and an approximate index would only add approximation. Add one only if search time becomes measurable
-* the retrieval result should carry the document id, file name, page numbers, heading, text and similarity, so Phase 6 can build citations without another lookup
-* an optional filter by document is cheap now and useful later; add it only if a requirement appears
+* The numbers are identical to four digits to the Phase 4 throwaway check, so the service, the endpoint and the shared embedding service reproduce what was measured by hand.
+* The first request took about 22 s (the model load made about 15 requests to huggingface.co to check for updates, although the files are cached). Later requests were fast.
 
-### Do NOT add yet
+### Observations for later phases (not fixed)
 
-* hybrid search
-* reranking
-* query expansion
-* complex retrieval pipelines
+* Table question: the top three scores were 0.550, 0.545 and 0.531. The second result (Applications, which mentions table structure recognition in passing) and the third (Abstract) are close to the first, so a small gap does not mean a weak match. Ranking among the top chunks is something Phase 7 must measure.
+* OCR question: the second result was the References chunk (0.43), as seen in Phase 4. Bibliography noise is confirmed.
+* Unanswerable question: still returns three chunks, all below 0.07. The gap to in-scope questions (above 0.5) is large on this document, but it is three questions on one document; no threshold is chosen yet.
+* The shared model has no loading lock: two simultaneous first requests could both load the model. Harmless for one developer; recorded in DECISIONS.md 13.3.
+* `ValueError` from the service is not mapped to an HTTP error. The endpoint validates first, so it cannot happen through the API; a future caller that skips the schemas would get a 500.
 
 ### Learning focus
 
@@ -447,14 +476,22 @@ Top-K chunks
 * retrieval
 * Top-K search
 * retrieval quality
+* what a service should return (plain data, not database rows)
+* sharing an expensive object (the model) across requests
 
 ### Exit condition
 
 Given a test question, the system can retrieve relevant chunks from the correct document.
 
+**Met:** three questions asked through `POST /api/v1/search` with the real model retrieved the correct chunk first (tables, OCR) or low-similarity chunks only (unanswerable), with pages and headings preserved; 93 tests pass; CI is green.
+
 ---
 
 # Phase 6 — Gemini + RAG
+
+### Status
+
+**Next**
 
 ### Objective
 
@@ -489,6 +526,16 @@ Citations
 * basic refusal behavior when relevant information is unavailable
 
 Planning note: vector search never says "nothing found" by itself. Refusal needs either a similarity threshold, the model's own judgement from the prompt, or both. Choose it with evaluation data (Phase 7), not by guessing a number.
+
+### Notes from Phase 5
+
+* `RetrievalService.search(question, top_k)` already returns `RetrievedChunk` objects with `document_id`, `filename`, `page_numbers`, `heading`, `text` and `similarity`. The RAG service should call it, not repeat the query.
+* the shared `EmbeddingService` and `RetrievalServiceDep` already exist in `app/api/deps.py`; the RAG service reuses them, so the model is still loaded once per process
+* `POST /api/v1/search` stays as the inspection endpoint. The question endpoint (`/ask`) is a new router included next to it in `app/api/v1/router.py`
+* a citation is built from `filename`, `page_numbers` (a chunk can span pages, so show a range) and `heading`. The page number is the reliable part; the heading is a hint (Phase 3 limitations)
+* Gemini is the first external network call in the request path: failures must become `ExternalServiceError` (502), and the API key is a secret that goes in `.env` and the settings object, never in the repository
+* retrieved chunks can include loosely related ones (bibliography, abstract). How many chunks go into the prompt is a tunable value, not a fact; start with the default `top_k` and let Phase 7 decide
+* log the similarities of the retrieved chunks next to each answer, so Phase 7 can use real data to choose the refusal rule
 
 ### Learning focus
 
@@ -545,6 +592,8 @@ Include questions that probe the known Phase 3 limitations (tables, wrongly labe
 
 Also include questions the documents cannot answer, including near misses on the same topic, so the refusal threshold has data behind it.
 
+Retrieval can be evaluated on its own by calling `RetrievalService` directly (or `POST /api/v1/search`), without Gemini. That separates "did retrieval find the right chunk?" from "did the answer use it correctly?".
+
 ### Experiments prepared by earlier phases
 
 Each of these is a small, measurable change; none should be made before the evaluation exists:
@@ -554,6 +603,8 @@ Each of these is a small, measurable change; none should be made before the eval
 * Docling's `repeat_table_header` option, for the lost-table-header limitation
 * excluding or down-weighting bibliography chunks
 * the similarity threshold for "not found"
+* the default `top_k` (5) and the question length limit (1000 characters); both are guesses from Phase 5
+* whether a vector index is needed (only if search time becomes measurable on a larger corpus)
 
 ### Use evaluation to identify weaknesses.
 
@@ -743,7 +794,8 @@ Planning notes:
 
 * the application image now includes Docling, CPU PyTorch and sentence-transformers, so it will be large. Model downloads (Docling, EmbeddingGemma) need a persistent volume or a build-time step
 * EmbeddingGemma is gated: a build-time download or a runtime download needs `HF_TOKEN` as a secret, never baked into an image or committed
-* the embedding model loads once per process (about 5 to 10 s); the API must hold one shared `EmbeddingService`, not create one per request
+* the embedding model loads once per process, and the API already holds one shared `EmbeddingService` (Phase 5). Loading is lazy, so the first search request pays for it. Measured in Phase 5: about 22 s, mostly about 15 update-check requests to huggingface.co even though the files are cached. In containers, run offline with the model pre-downloaded (for example `HF_HUB_OFFLINE=1`) to remove that delay and the dependency on Hugging Face at runtime
+* decide then whether to preload the model at startup (slower start, fast first search, fails early if the model is missing) or keep lazy loading; a container health check makes preloading more attractive
 
 ### Verify
 
@@ -1014,6 +1066,8 @@ Citation
 ```
 
 This is the **most important product milestone**.
+
+Progress: retrieval (the first half) works through `POST /api/v1/search` since Phase 5. Gemini, the grounded answer and the citation output are Phase 6.
 
 ---
 

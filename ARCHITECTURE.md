@@ -102,18 +102,20 @@ Each directory should have a clear responsibility.
 
 New directories should only be introduced when a real requirement appears.
 
-### Implemented so far (end of Phase 4)
+### Implemented so far (end of Phase 5)
 
 ```text
 app/
 ├── main.py            # create_app() application factory
 ├── api/
-│   ├── deps.py        # shared FastAPI dependencies (DbSession, services)
+│   ├── deps.py        # shared FastAPI dependencies (DbSession, services, the shared
+│   │                  #   EmbeddingService, RetrievalService)
 │   ├── health.py      # /health, /health/db
 │   └── v1/
 │       ├── router.py  # /api/v1 router
 │       ├── info.py    # /api/v1/info (example route → service)
-│       └── documents.py  # POST /documents, GET /documents/{id}
+│       ├── documents.py  # POST /documents, GET /documents/{id}
+│       └── search.py  # POST /search (retrieval inspection endpoint)
 ├── core/
 │   ├── config.py      # typed settings (pydantic-settings)
 │   ├── logging.py     # centralized logging setup
@@ -127,7 +129,8 @@ app/
 │   ├── storage.py     # StorageService (boto3 → MinIO / S3)
 │   ├── documents.py   # DocumentService (validate, store file, insert row)
 │   ├── embeddings.py  # EmbeddingService (EmbeddingGemma: documents and queries)
-│   └── chunks.py      # ChunkService (store chunks + vectors in document_chunks)
+│   ├── chunks.py      # ChunkService (store chunks + vectors in document_chunks)
+│   └── retrieval.py   # RetrievalService, RetrievedChunk (embed question → pgvector search)
 ├── pipeline/          # document processing, independent of FastAPI, Airflow and the database
 │   ├── models.py      # Chunk (text, page_numbers, heading)
 │   ├── extract.py     # PDF → Docling document
@@ -139,7 +142,8 @@ app/
     ├── health.py
     ├── errors.py
     ├── info.py
-    └── documents.py   # DocumentResponse
+    ├── documents.py   # DocumentResponse
+    └── search.py      # SearchRequest, SearchHit, SearchResponse
 
 migrations/
 ├── env.py             # Alembic setup (URL comes from Settings)
@@ -162,6 +166,8 @@ tests/
 ```
 
 Scripts that import from `app` are run as modules from the project root, for example `uv run python -m scripts.run_pipeline`.
+
+Test file names must be unique across all of `tests/` (there are no `__init__.py` files, so pytest identifies a test module by its file name). For example, the retrieval tests are `tests/unit/test_retrieval_service.py` and `tests/integration/test_retrieval_integration.py`.
 
 The upload endpoint does not call the pipeline yet. Today a document is ingested by running `scripts.ingest_document` (direct execution mode). Connecting upload to processing, and the status transitions, come with Airflow in Phase 8.
 
@@ -261,9 +267,10 @@ GET  /health/db                readiness: the database is reachable
 GET  /api/v1/info              example route → service (app name, version, environment)
 POST /api/v1/documents         upload a PDF: store the file, insert the row, return metadata (201)
 GET  /api/v1/documents/{id}    read the metadata of one document
+POST /api/v1/search            retrieve the most similar chunks for a question (inspection endpoint)
 ```
 
-No endpoint calls the pipeline, the embedding service or the chunk service yet. There is no question endpoint yet; it arrives with retrieval and RAG (Phases 5 and 6).
+The search endpoint reaches the embedding service (through `RetrievalService`). No endpoint calls the pipeline or the chunk service yet. There is no question endpoint (`/ask`) yet; it arrives with RAG (Phase 6), next to `/search`, which stays.
 
 ### Document endpoints
 
@@ -283,10 +290,27 @@ DocumentService.create
 
 The response is `DocumentResponse` (`id`, `filename`, `content_type`, `size_bytes`, `status`, `created_at`). `storage_key` is internal and is not returned.
 
+### Search endpoint
+
+```text
+POST /api/v1/search  {"question": "...", "top_k": 5}
+        │
+        ▼
+SearchRequest (Pydantic): strip whitespace, question 1-1000 characters, top_k 1-20
+        │   (invalid input → 422 validation_failed, the service is never called)
+        ▼
+Route (plain def): call RetrievalService.search, convert each hit to SearchHit
+        │
+        ▼
+SearchResponse {"results": [ {document_id, filename, page_numbers, heading, text, similarity}, ... ]}
+```
+
+It is an inspection endpoint: it shows what retrieval returns, so a bad answer can later be traced to retrieval or to generation. The route is a plain `def`, so FastAPI runs the blocking embedding work in a thread pool and the server stays responsive. An empty database returns an empty list, not an error.
+
 ### Conventions
 
 * **Versioning:** business endpoints live under `/api/v1`. Operational endpoints (`/health`, `/health/db`) stay at the root so infrastructure checks do not change with API versions.
-* **Dependency injection:** services and database sessions are provided to routes through FastAPI dependencies defined in `app/api/deps.py`. Routes receive a ready-to-use service and call it.
+* **Dependency injection:** services and database sessions are provided to routes through FastAPI dependencies defined in `app/api/deps.py`. Routes receive a ready-to-use service and call it. Most services are built per request; the `EmbeddingService` is the exception: one instance is shared by the whole process (see section 9).
 * **Errors:** every error response has one shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`) and the registered handlers convert them to HTTP responses. FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server, so internals are never leaked to clients.
 
 ---
@@ -449,7 +473,7 @@ PostgreSQL
 └── alembic_version
 ```
 
-Both tables exist (Phase 4). The `vector` extension (version 0.8.7 locally) is created by the migration `3f9a7c2d1e84`.
+Both tables exist (Phase 4). The `vector` extension (version 0.8.7 locally) is created by the migration `3f9a7c2d1e84`. Phase 5 added no migration: retrieval only reads these tables.
 
 Design points:
 
@@ -546,6 +570,17 @@ The vectors can then be compared through pgvector similarity search.
 * The model loads on first use, on CPU, through `sentence-transformers`. Importing the module stays fast, and unit tests use a fake model.
 * When the model loads, the service checks that its output size equals the database column size (768) and raises a clear error otherwise.
 
+### One shared instance in the API
+
+The model takes seconds to load and uses memory, so the API creates one `EmbeddingService` for the whole process, never one per request. In `app/api/deps.py`, `get_embedding_service` is decorated with `lru_cache`, and `RetrievalService` receives that instance through `EmbeddingServiceDep`. The model still loads lazily, so the first search pays the loading cost.
+
+```text
+first POST /api/v1/search  →  model loads (about 22 s measured, mostly update checks to Hugging Face)
+later searches             →  same instance, model already in memory
+```
+
+Two simultaneous first requests could both load the model, because there is no lock; for one developer this only wastes time, and it is recorded in DECISIONS.md 13.3. Whether to preload the model at startup is revisited in Phase 11, when container health checks are designed.
+
 ### Configuration
 
 The model is one setting, `EMBEDDING_MODEL_ID` (default `google/embeddinggemma-300m`). The chunker's tokenizer and the embedding service both read it, so chunk size is always measured by the model that embeds the chunk. Changing to a model with another vector size needs a new migration.
@@ -598,9 +633,43 @@ More advanced approaches such as:
 
 should only be added when evaluation demonstrates a need for them.
 
-Phase 4 proved the query shape with a throwaway check: order `document_chunks` by cosine distance to the query vector, join `documents` for the file name, take the top K. The retrieval service (Phase 5) returns, for each chunk: document ID, file name, page numbers, heading, text and similarity, so citations can be built without another lookup.
+### Implemented (Phase 5)
 
-Dense search always returns the nearest chunks, even when the document cannot answer the question. Deciding when to answer "not found" is not solved by retrieval alone (see DECISIONS.md 12.11); it is decided in Phases 6 and 7 with evaluation data.
+`RetrievalService` (`app/services/retrieval.py`) takes a database session and an embedding service, and exposes `search(question, top_k)`:
+
+```text
+search(question, top_k)
+   │
+   ├── strip the question; reject empty, longer than 1000 characters, or top_k outside 1-20 (ValueError)
+   │
+   ├── EmbeddingService.embed_query(question)          → query vector (768, normalized)
+   │
+   ├── SQL:  SELECT document_chunks.*, documents.filename,
+   │                cosine_distance(embedding, query_vector) AS distance
+   │         FROM document_chunks JOIN documents ON documents.id = document_chunks.document_id
+   │         ORDER BY distance, document_id, chunk_index        (stable order on ties)
+   │         LIMIT top_k
+   │
+   └── list[RetrievedChunk]    similarity = 1 - distance
+```
+
+`RetrievedChunk` is a frozen dataclass:
+
+```text
+RetrievedChunk
+├── document_id
+├── filename          (joined from documents, so no second lookup)
+├── page_numbers
+├── heading           (may be None)
+├── text
+└── similarity
+```
+
+It is a plain object, not a database row: callers never see the ORM model or the raw vector. The limits (`DEFAULT_TOP_K = 5`, `MAX_TOP_K = 20`, `MAX_QUESTION_CHARS = 1000`) are constants in the service, and the API schemas import them, so they are defined once. The API checks them first and returns a 422; the service checks again and raises `ValueError`, which is not mapped to an HTTP error because the API cannot let a bad value through. The numbers are guesses and are Phase 7 experiments.
+
+Phase 5 measurement through the API, with the real model on the Technical Report: tables 0.5499, OCR 0.5792, unanswerable question 0.0692, identical to the Phase 4 hand check.
+
+Dense search always returns the nearest chunks, even when the document cannot answer the question (see DECISIONS.md 12.11). The service therefore returns the similarity of every hit, so a "not found" rule can be applied later without changing its shape. Deciding when to answer "not found" is not solved by retrieval alone; it is decided in Phases 6 and 7 with evaluation data. Not added on purpose: a similarity threshold, a document filter, a vector index, hybrid search, reranking, query expansion.
 
 ---
 
@@ -649,7 +718,7 @@ The RAG service is responsible for:
 * processing the response
 * returning the answer and citation information
 
-The embedding model takes seconds to load, so the API will hold one shared `EmbeddingService` instance for all requests rather than creating one per request.
+The first half of this flow exists since Phase 5: `RetrievalService` returns the relevant chunks with their provenance, and the API already holds one shared `EmbeddingService` (see section 9). The RAG service will call `RetrievalService` and add the context builder, the Gemini call and the citations (Phase 6). Gemini is the first external network call in the request path, so its failures become `ExternalServiceError` (502), and its API key is a secret in the settings, never in the repository.
 
 ---
 
@@ -663,6 +732,7 @@ Conceptually:
 Retrieved chunk
 │
 ├── document_id
+├── filename
 ├── page_numbers
 ├── heading
 └── text
@@ -678,6 +748,8 @@ Section: 5.2 Policy
 ```
 
 Because a chunk can span pages, a citation can show a page range. Because some headings are wrong or missing (see section 6), the page number is the more reliable part of a citation, and the section label is a helpful hint.
+
+Since Phase 5 every search result already carries all of these fields (`RetrievedChunk`), so building a citation needs no extra database lookup.
 
 The exact citation format can evolve with the UI.
 
@@ -847,7 +919,7 @@ Currently, Docker Compose runs PostgreSQL + pgvector (the `pgvector/pgvector:pg1
 
 * The project lives on D:. The uv cache and the Hugging Face cache are on D: as well (`UV_CACHE_DIR` and `HF_HOME` point to `D:\Backup\School\Project\_caches\...`), outside the repository, so they are never committed and C: stays free. The Hugging Face login token is stored there too.
 * PyTorch is the CPU-only build, installed from an explicit `pytorch-cpu` uv index declared in `pyproject.toml`.
-* Docling, PyTorch and sentence-transformers make the application image large, and Docling and EmbeddingGemma download models at first use. Phase 11 must give those models a persistent volume or a build-time download, with the Hugging Face token as a secret.
+* Docling, PyTorch and sentence-transformers make the application image large, and Docling and EmbeddingGemma download models at first use. Phase 11 must give those models a persistent volume or a build-time download, with the Hugging Face token as a secret. The embedding model also asks huggingface.co for updates on every load even when cached (about 15 requests, most of the 22 s first search), so containers should run offline with the model pre-downloaded.
 
 ---
 
@@ -916,7 +988,7 @@ Environment-specific values should not be hardcoded into application logic.
 
 Secrets and configuration should be supplied through environment variables or appropriate deployment configuration.
 
-In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`), uploads (`MAX_UPLOAD_MB`) and the embedding model (`EMBEDDING_MODEL_ID`, which has a default and normally needs no `.env` entry). The Hugging Face token is not a setting: it is stored by `hf auth login` under `HF_HOME`, or supplied as `HF_TOKEN` in deployments.
+In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`), uploads (`MAX_UPLOAD_MB`) and the embedding model (`EMBEDDING_MODEL_ID`, which has a default and normally needs no `.env` entry). Phase 5 added no setting: the search limits are constants in `app/services/retrieval.py`, not environment values, because they are tuned with evaluation data and are not environment-specific. The Hugging Face token is not a setting: it is stored by `hf auth login` under `HF_HOME`, or supplied as `HF_TOKEN` in deployments.
 
 ---
 
@@ -946,6 +1018,8 @@ Unit tests replace dependencies (for example `get_db`, the storage client, the e
 
 Pipeline tests follow the same rule: `test_pipeline_clean.py` (13 tests) uses the exact junk strings found in real PDFs, and `test_pipeline_chunk.py` (6 tests) uses a fake chunker, so no Docling model is loaded. `test_embedding_service.py` (6 tests) uses a fake model and checks the document format, the order of vectors, the query path, and the dimension check. `test_chunk_service.py` (2 tests) checks that bad input is rejected before anything is deleted. The real Docling conversion and the real embedding model are checked manually with `scripts/run_pipeline.py` and `scripts/ingest_document.py`, because they take minutes.
 
+Phase 5 added two unit test files. `test_retrieval_service.py` (7 tests, parametrized) checks that an empty or too long question and a `top_k` outside 1-20 are rejected before the database or the model is touched. `test_search_api.py` (8 tests) replaces `get_retrieval_service` with a fake, and checks the response fields, the default `top_k`, trimming, and six invalid bodies that must return a 422 with the standard error shape and never reach the service.
+
 ### Integration tests
 
 Test interactions between components.
@@ -960,7 +1034,11 @@ Examples:
 
 Integration tests use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable, so CI (which has neither) stays green. Each test removes only the rows and files it created. The chunk integration tests (8) use small fake vectors of the right size, so they need no embedding model, and they cover provenance round trip, replacement, empty replacement, cascade deletion, rejected input, an unknown document, and a failed commit that must keep the old chunks.
 
-At the end of Phase 4 the suite has 75 tests.
+The retrieval integration tests (3, in `test_retrieval_integration.py`) use a fake embedding service and three hand-made unit vectors with known similarity to the query: 1.0, 0.7071 and 0.0. They check the ranking, the provenance round trip (document ID, file name, pages, heading including `None`), `top_k`, and that the question is stripped before embedding. The real documents already in the database are left alone: the fixture creates and deletes only its own document, and the test asserts only that its two closest chunks come first.
+
+Test file names must be unique across all of `tests/` (see section 3).
+
+At the end of Phase 5 the suite has 93 tests.
 
 The test strategy should remain proportional to the project's size.
 

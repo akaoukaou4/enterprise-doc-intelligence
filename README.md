@@ -2,7 +2,7 @@
 
 An AI-powered internal knowledge assistant. Employees ask natural-language questions about company documents and receive answers grounded in those documents, with citations to the source document and page.
 
-> **Status:** work in progress. Phase 4 (embeddings) is complete: a PDF can be processed into chunks, embedded with EmbeddingGemma, and stored with its page numbers and headings in PostgreSQL + pgvector. Phase 5 (retrieval) is next. See [ROADMAP.md](ROADMAP.md).
+> **Status:** work in progress. Phase 5 (retrieval) is complete: a question can be embedded and matched against the stored chunks, and the closest chunks come back with their document, pages and headings. Phase 6 (Gemini + RAG) is next. See [ROADMAP.md](ROADMAP.md).
 
 ## Planned workflow
 
@@ -25,7 +25,7 @@ Question → retrieve relevant chunks → Gemini → grounded answer + citations
 | Infrastructure | Docker, Docker Compose, AWS (EC2, RDS, S3), Terraform |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
 
-Only Phases 0 to 4 are implemented so far. The rest of the stack arrives phase by phase.
+Only Phases 0 to 5 are implemented so far. The rest of the stack arrives phase by phase.
 
 ## Current state
 
@@ -42,10 +42,12 @@ Implemented:
 * document processing pipeline (`app/pipeline/`): PDF → Docling → HybridChunker → cleaning → `Chunk(text, page_numbers, heading)`. Chunk size is measured with the EmbeddingGemma tokenizer (512 tokens). It drops the table of contents, removes license watermarks and invisible characters, and does not depend on FastAPI, Airflow or the database
 * `EmbeddingService`: EmbeddingGemma on CPU, 768-dimensional normalized vectors. Chunks are embedded as `title: <heading> | text: <chunk>`, questions with the model's query prompt
 * `ChunkService`: stores a document's chunks, page numbers, headings and vectors in `document_chunks`, replacing the old chunks in one transaction
+* `RetrievalService`: embeds a question and returns the top K closest chunks (pgvector cosine distance) as `RetrievedChunk(document_id, filename, page_numbers, heading, text, similarity)`, ready for citations
+* `POST /api/v1/search`: the retrieval inspection endpoint (`question`, `top_k` 1 to 20, default 5). The API holds one shared embedding model for all requests, loaded on the first search
 * `scripts/ingest_document.py`: runs the whole chain for an uploaded document (MinIO → pipeline → embeddings → PostgreSQL)
 * unit tests (fakes) and integration tests (real PostgreSQL and MinIO), Ruff, pre-commit hooks, and GitHub Actions CI
 
-Not connected yet: the upload endpoint does not start the ingestion (that arrives with Airflow in Phase 8), and there is no retrieval, Gemini or question endpoint yet (Phases 5 and 6).
+Not connected yet: the upload endpoint does not start the ingestion (that arrives with Airflow in Phase 8), and there is no Gemini or question endpoint yet (Phase 6). `/search` returns chunks, not answers.
 
 ## Getting started
 
@@ -119,6 +121,23 @@ uv run python -m scripts.ingest_document <document_id>
 
 On a CPU, a 9-page PDF takes about 3 to 4 minutes (about 10 s per page for Docling, plus about 1.6 s per chunk for embeddings). The first run also loads the models.
 
+### Try a search
+
+A document must be ingested first (see above). With the API running, open http://127.0.0.1:8000/docs, expand `POST /api/v1/search`, click "Try it out" and send, for example:
+
+```json
+{"question": "Which OCR engine can be used for scanned pages?", "top_k": 3}
+```
+
+Each result has the `filename`, `page_numbers`, `heading`, `text` and `similarity` of a chunk, best match first. The first search after the server starts takes about 20 seconds because the embedding model loads; later searches are fast. From PowerShell:
+
+```powershell
+$body = @{ question = "Which OCR engine can be used for scanned pages?"; top_k = 3 } | ConvertTo-Json
+(Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/search -ContentType "application/json" -Body $body).results | Select-Object filename, similarity, heading
+```
+
+An empty or too long question (over 1000 characters) and a `top_k` outside 1 to 20 are rejected with a `422` error.
+
 ### Try the document pipeline only
 
 Put a PDF in `data/sample_docs/` (PDFs there are git-ignored), then run the pipeline without storing anything:
@@ -143,7 +162,9 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers. They skip themselves automatically when those services are not available, so `uv run pytest` also works without Docker running. The pipeline and embedding unit tests use fakes and need no Docling or EmbeddingGemma models.
+Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers. Start them with `docker compose up -d` first. They skip themselves automatically when those services are not available, so `uv run pytest` also works without Docker running, but then the integration tests are skipped, not run. The pipeline, embedding, retrieval and search unit tests use fakes and need no Docling or EmbeddingGemma models.
+
+Test file names must be unique across the whole `tests/` folder (there are no `__init__.py` files, so two files with the same name make pytest stop at collection).
 
 ## Known limitations
 
@@ -153,10 +174,12 @@ Document processing (Phase 3):
 * Docling reports every heading as level 1, and some headings are wrong or missing, so the page number is the most reliable part of a citation.
 * A table can lose its header row or be split across chunks.
 
-Retrieval (seen in Phase 4):
+Retrieval (seen in Phases 4 and 5):
 
-* Dense vector search always returns the nearest chunks, even when the document cannot answer the question. Deciding when to answer "not found" is handled in Phases 6 and 7.
+* Dense vector search always returns the nearest chunks, even when the document cannot answer the question (an unrelated question still returns `top_k` chunks, with low similarity). Deciding when to answer "not found" is handled in Phases 6 and 7.
 * Bibliography chunks can be returned for questions that mention a cited tool.
+* Lower-ranked results can be only loosely related, and a small score gap between results does not mean a weak match.
+* The first search after the server starts takes about 20 seconds while the model loads.
 
 These are recorded in [DECISIONS.md](DECISIONS.md) and will be measured in the Phase 7 evaluation before any fix is attempted.
 
