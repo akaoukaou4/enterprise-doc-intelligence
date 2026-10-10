@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,15 @@ class Settings(BaseSettings):
     # The database column is vector(768): another model needs the same size
     # or a new migration (the service checks this when the model loads).
     embedding_model_id: str = "google/embeddinggemma-300m"
+
+    # Gemini API (answer generation). reads GEMINI_API_KEY and GEMINI_MODEL.
+    # The key is optional so the app, tests and CI start without it. It is a
+    # SecretStr, so printing or logging the settings never shows the value;
+    # code that needs it calls .get_secret_value().
+    # The model name is a setting because models get retired and replaced.
+    # Use a stable name, never a "-latest" alias or a preview model.
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     # extra="ignore": .env also holds MINIO_SECURE, etc.
     # We model them as each phase needs them.
