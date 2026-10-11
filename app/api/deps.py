@@ -9,6 +9,8 @@ from app.db.session import get_db
 from app.services.documents import DocumentService
 from app.services.embeddings import EmbeddingService
 from app.services.info import InfoService
+from app.services.llm import LlmService
+from app.services.rag import RagService
 from app.services.retrieval import RetrievalService
 from app.services.storage import StorageService
 
@@ -57,3 +59,18 @@ def get_retrieval_service(db: DbSession, embeddings: EmbeddingServiceDep) -> Ret
 
 
 RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]
+
+
+def get_llm_service(settings: AppSettings) -> LlmService:
+    """Cheap to create per request: the real Gemini client is cached per process."""
+    return LlmService(settings)
+
+
+LlmServiceDep = Annotated[LlmService, Depends(get_llm_service)]
+
+
+def get_rag_service(retrieval: RetrievalServiceDep, llm: LlmServiceDep) -> RagService:
+    return RagService(retrieval, llm)
+
+
+RagServiceDep = Annotated[RagService, Depends(get_rag_service)]
