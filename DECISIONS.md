@@ -1,1332 +1,262 @@
-# DECISIONS.md
+# DECISIONS
 
-## Purpose
+**Question this file answers:** why is the system the way it is?
+**Not here:** how it works now (ARCHITECTURE), the plan (ROADMAP), how to run it (README).
 
-This document records important architectural, technical, and product decisions made during the development of the Enterprise AI Document Intelligence Platform.
+## How to read and write this file
 
-The goal is to preserve the reasoning behind these decisions so the project remains coherent as it evolves.
-
-A decision may be changed later when new evidence, requirements, or constraints justify it.
-
----
-
-# 1. Product Decisions
-
-## 1.1 AI Document Intelligence Is the Core Product
-
-**Decision:**
-The project focuses on helping employees understand and search enterprise documents using AI.
-
-**Why:**
-
-* Solves a realistic business problem.
-* Provides a clear use case for RAG and LLMs.
-* Keeps AI Engineering as the main focus.
-* Allows Data Engineering, Backend, and Cloud technologies to support one coherent product.
+- One record per decision, numbered `D-nn`. Append new ones at the end. Never delete or rewrite an old one.
+- **Status:** *Accepted*, *Revisit at Phase N* (accepted, with a known trigger to look again), or *Superseded by D-nn*. When a decision changes, add a new record that says "Supersedes D-nn", and change the old status. Link both ways. Then run the ripple check: fix every doc that mentions the old decision, in the same commit.
+- Record shape: **Decision**, **Why**, **Rejected** (alternatives and the reason), **Revisit** (what would change my mind). Evidence tables are at the end (E-1, E-2, E-3).
+- Volatile facts (model names, quotas, versions) are written here once, with the date they were checked.
+- Section numbers of the old file (for example "12.2") no longer exist. The old file is in Git at the tag `docs-before-restructure`.
 
 ---
 
-## 1.2 V1 Is Intentionally Small
+## Scope and architecture
 
-**Decision:**
-V1 focuses on:
+### D-01 · Product and V1 scope · Accepted
+**Decision.** Build a document-intelligence assistant: upload PDFs, ask questions, get grounded answers with page and section citations. V1 is the smallest end-to-end path (upload, process, chunk, embed, store, retrieve, generate, cite). Risk classification, audit prioritization, agents, fine-tuning and advanced automation are deferred.
+**Why.** A realistic business problem that needs RAG keeps AI Engineering at the centre. A small V1 can be understood, tested and evaluated before anything is added.
+**Rejected.** Adding technologies for their keywords; building later features early. The rule for every technology is the 5-question test in the private kit (ENGINEERING_STANDARDS section 1).
 
-```text
-Upload PDF
-    ↓
-Process document
-    ↓
-Create embeddings
-    ↓
-Store chunks
-    ↓
-Retrieve relevant chunks
-    ↓
-Generate answer with Gemini
-    ↓
-Return answer + citations
-```
+### D-02 · Modular monolith · Accepted
+**Decision.** One Python application with clear internal layers; PostgreSQL and MinIO as containers. No microservices, Kubernetes or Kafka.
+**Why.** Small scale, easier debugging and local development, no distributed-system cost.
+**Revisit.** Only if a measured requirement appears.
 
-**Why:**
+### D-03 · The pipeline is independent; two execution modes · Accepted
+**Decision.** `app/pipeline/` imports no FastAPI, Airflow or database code. Direct mode: scripts and tests call the pipeline and services. Orchestrated mode (Phase 8): Airflow tasks call the same functions.
+**Why.** Fast development, easy testing, and Airflow orchestrates without owning the logic.
+**Consequence.** Embedding and storing are services in `app/services/`, not part of the pipeline package.
 
-* Establishes the complete end-to-end AI workflow first.
-* Reduces unnecessary complexity.
-* Makes the system easier to understand, test, and debug.
-* Allows improvements to be based on real evaluation rather than assumptions.
-
-Features such as risk classification, audit prioritization, agents, fine-tuning, and advanced automation are deferred.
+### D-04 · Deployment path: local first, simple AWS, Terraform last · Accepted
+**Decision.** Docker Compose locally (PostgreSQL + pgvector, MinIO now; more later). AWS only after the local system works: EC2, RDS PostgreSQL + pgvector, S3, IAM, CloudWatch. Terraform only after the AWS setup is understood by hand. The same application runs in both environments; only configuration changes.
+**Why.** Cloud must not hide application problems, and each service needs a reason.
+**Rejected.** EKS, Lambda, ECS, OpenSearch, Redis, queues.
+**Revisit at Phase 12.**
 
 ---
 
-# 2. Architecture Decisions
+## AI and document processing
 
-## 2.1 Use a Modular Monolith
+### D-05 · Gemini for generation · Accepted
+**Decision.** Use the Gemini API for answers. The project is about integrating AI, not training or hosting large models.
+**Why.** A capable LLM without large local hardware, and it deploys easily. The model name is one setting (see D-28).
 
-**Decision:**
-The application will initially be built as a modular monolith rather than microservices.
+### D-06 · EmbeddingGemma, local, one setting · Accepted
+**Decision.** `google/embeddinggemma-300m` for documents and questions, set by `EMBEDDING_MODEL_ID`, read by both the chunker tokenizer and the embedding service. 768 dimensions. The service checks the model's output size against the database column when the model loads.
+**Why.** Runs on CPU, sends no document text to an embedding API, and one setting prevents the tokenizer and the model drifting apart. A model with another size needs a new migration, and the check makes that visible at once.
+**Consequence.** The model is gated: accept the license and run `uv run hf auth login` once. The token lives under `HF_HOME`, outside the repo. Deployments need `HF_TOKEN` as a secret or a pre-downloaded model volume. CI never needs it (tests use fakes).
+**Revisit.** If evaluation shows another model is better.
 
-**Why:**
+### D-07 · Dense retrieval first; evaluate before optimizing · Accepted
+**Decision.** Retrieval is pgvector cosine similarity. No hybrid search, reranking, query expansion, similarity threshold, document filter or vector index until Phase 7 shows a need.
+**Why.** A measurable baseline first. At tens of chunks an exact scan is instant and an index would make results approximate for no benefit.
+**Revisit at Phase 7.**
 
-* The project is small enough to operate as one application.
-* Easier local development and debugging.
-* Lower infrastructure complexity.
-* Clear internal module boundaries can be maintained without distributed-system overhead.
+### D-08 · Docling and HybridChunker · Accepted
+**Decision.** Docling parses PDFs; HybridChunker produces the chunks (D-20 sets the size).
+**Why.** Structure-aware parsing suits enterprise documents better than plain text extraction, and avoids writing a chunker early. Confirmed on two real PDFs.
+**Revisit.** If Phase 7 shows chunking hurts retrieval.
 
-Microservices may be considered later only if real requirements justify them.
+### D-09 · Provenance is part of the data · Accepted
+**Decision.** A chunk is `Chunk(text, page_numbers, heading)`. `page_numbers` is a list because chunks span pages. Only the nearest heading is kept, because Docling reports every heading as level 1. The stored row adds `document_id` and `chunk_index`. The embedding is never a substitute for provenance.
+**Why.** Citations need it. The schema comes from what Docling provides, not from invention.
 
----
+### D-10 · Look at real output before designing; CPU PyTorch; caches on D: · Accepted
+**Decision.** Inspect real Docling output on real PDFs before writing pipeline code. Install CPU-only PyTorch from an explicit `pytorch-cpu` uv index (`torch` and `torchvision` as direct dependencies). Keep `UV_CACHE_DIR` and `HF_HOME` on D: outside the repository.
+**Why.** Several assumptions were wrong until measured. The GTX 1050 (4 GB) is too small to help; CUDA wheels add GB, and on Linux CI would download them. C: is nearly full; uv hardlinks only work on one drive.
 
-## 2.2 Keep the Document Pipeline Independent
+### D-11 · Four cleaning rules, each backed by data · Accepted
+**Decision.** Drop table-of-contents chunks (items labelled `document_index`), remove the license watermark line, strip `\x08` and `﻿`, drop chunks empty after cleaning. No minimum chunk size.
+**Why.** The ISO PDF gave 156 chunks, 84 of them contents junk. Invisible characters would reach the database, the embedding and the prompt. No evidence that small chunks hurt.
+**Rejected.** Pattern-based contents detection (the label is more reliable); a length threshold (a tuning knob without data).
+**Limit.** Works only when Docling detects the contents page.
 
-**Decision:**
-Document processing logic must remain independent from FastAPI and Airflow.
+### D-12 · Known pipeline limits are accepted for now · Revisit at Phase 7
+**Decision.** Not fixed: text and tables inside images are unreliable; some headings are wrong or missing; tables can lose their header row or split across chunks; rows without separator lines merge.
+**Why.** The target content is mostly prose policies where these are rare. A rule like "ignore headings repeated on several pages" would also drop real captions.
+**Revisit.** Phase 7 questions about tables and mislabelled sections. Candidate fix: HybridChunker `repeat_table_header`.
 
-**Why:**
+### D-13 · Embed `title: <heading> | text: <chunk>`, built by our code · Accepted
+**Supersedes** the Phase 3 plan to embed `chunker.contextualize(chunk)`.
+**Decision.** `build_document_text` in `app/services/embeddings.py` builds the model's native document format from our own `Chunk` and passes it to plain `encode`. Questions use `encode_query`. The stored `text` is the plain chunk text.
+**Why.** The model has a title slot and its card says a real title helps. Its own `encode_document` always writes `title: none`. Building the string ourselves keeps `Chunk` unchanged and the embedding stage independent of Docling. Without a heading our string equals the model's own prompt (cosine 1.0000).
+**Rejected.** `contextualize` (couples the embed stage to Docling objects or pollutes `text`).
+**Revisit at Phase 7:** heading versus `none` (wrong headings can mislead a vector).
 
-* The same pipeline should be executable directly during development.
-* Airflow should orchestrate the pipeline rather than contain its business logic.
-* The pipeline remains easier to test and reuse.
+### D-14 · 512-token chunks measured with the EmbeddingGemma tokenizer · Revisit at Phase 7
+**Supersedes** the Phase 3 default MiniLM tokenizer for chunking.
+**Decision.** HybridChunker measures size with the embedding model's tokenizer, budget 512 tokens, although the model accepts 2048.
+**Why.** Size must be measured by the model that embeds the chunk. The larger vocabulary fits 30 to 60% more text in the same budget (E-2). Average chunk 170 to 290 tokens is a normal RAG size, and there is no evidence another size is better.
+**Revisit.** 256, 512, 1024 as a Phase 7 experiment (`MAX_CHUNK_TOKENS`, one line).
 
-Conceptually:
-
-```text
-Pipeline Logic
-      ↑
-      │
- ┌────┴─────┐
- │          │
-Direct    Airflow
-Execution  Orchestration
-```
-
-Implemented in Phase 3: `app/pipeline/` imports no FastAPI, Airflow, or database code (see section 11). Phase 4 kept this: embedding and storing live in services (`app/services/`), not in the pipeline package (see section 12).
-
----
-
-## 2.3 Use Direct and Orchestrated Execution Modes
-
-**Decision:**
-The system supports two conceptual execution modes.
-
-Development:
-
-```text
-FastAPI → Python Pipeline → Storage / Database
-```
-
-Orchestrated:
-
-```text
-FastAPI → Airflow → Python Pipeline → Storage / Database
-```
-
-**Why:**
-
-* Keeps development fast.
-* Allows Airflow to provide production-style orchestration.
-* Avoids making the core application dependent on Airflow.
-
-Phase 4 implemented the direct mode as `scripts/ingest_document.py` (see 12.10).
+### D-15 · Sample documents stay local · Accepted
+**Decision.** PDFs and Docling output stay in git-ignored folders. `data/eval/` is trackable; evaluation data is JSON or YAML (`.gitignore` ignores `data/**/*.csv`). The ISO/IEC 27001 standard is copyrighted: local use only, never sent to Gemini.
+**Why.** The repo is public. The demo and the evaluation set need fictional or openly licensed documents.
 
 ---
 
-# 3. AI Decisions
+## Data, storage and backend
 
-## 3.1 Use Gemini for LLM Generation
+### D-16 · PostgreSQL + pgvector, one table of chunks · Accepted
+**Decision.** One database for metadata, chunks and vectors. `document_chunks` has `document_id` FK `ON DELETE CASCADE`, `chunk_index`, `text`, `page_numbers integer[]`, `heading`, `embedding vector(768) NOT NULL`, and `UNIQUE (document_id, chunk_index)`. Similarity is `1 - cosine_distance` (the vectors are normalized, so cosine and dot product rank the same, and cosine stays correct if the model changes).
+**Why.** Cascade leaves no orphans. `integer[]` avoids a join table. `NOT NULL` plus `vector(768)` makes the database reject bad vectors. The unique index also serves "chunks of a document". No vector index (see D-07).
+**Rejected.** A dedicated vector database (no evidence PostgreSQL is insufficient).
+**Note.** The migration was written by hand (autogenerate cannot create the extension). The secret scanner flagged its hex revision ids; fixed with an inline `# pragma: allowlist secret`, not by disabling the hook.
 
-**Decision:**
-Gemini API is used for answer generation.
+### D-17 · Object storage through boto3 and a small StorageService · Accepted
+**Decision.** Originals live in object storage under `documents/<document_id>/<filename>`, never in the database. `boto3` talks to MinIO when `MINIO_ENDPOINT` is set and to real S3 otherwise (IAM role on EC2). `StorageService` has `upload`, `download`, `delete`, is the only importer of boto3, builds its client lazily, and maps errors to `NotFoundError` or `ExternalServiceError`. The `minio-init` container creates the bucket.
+**Why.** Provider switching by configuration only. No interface class or plugin system: abstract real variation, not imagined variation.
+**Limits.** Files are handled as bytes in memory (fine at 20 MB). If `.env` is missing, boto3 would try real AWS, so `.env` must exist. `MINIO_*` names may become `S3_*` in Phase 12.
 
-**Why:**
+### D-18 · Alembic for every schema change · Accepted
+**Decision.** Versioned migrations in `migrations/`, URL read from `Settings`, `versions/` excluded from Ruff, every generated migration read before applying. No `create_all`.
+**Why.** `create_all` cannot alter tables. The same history will run on RDS. One source of configuration.
 
-* Provides a capable modern LLM without requiring a large local model.
-* Fits the project's goal of learning AI integration rather than model training.
-* Reduces local hardware requirements.
-* Makes the application easier to deploy.
+### D-19 · Upload rules and document model · Accepted
+**Decision.** `documents` uses a Python-generated UUID, a unique `storage_key` and a plain-string `status` (not an ENUM). Accept only `application/pdf` whose bytes start with `%PDF-`, not empty, within `MAX_UPLOAD_MB` (20). Filename reduced to its last path component. Order: validate, store the file, insert the row; if the insert fails, roll back and delete the file. `storage_key` is never returned by the API.
+**Why.** The key needs the id before the insert. A row pointing at a missing file is worse than a file without a row. A client can lie about content type. ENUMs are awkward to migrate.
+**Limit.** A crash between the two steps can leave an orphan file. No cleanup job at this scale.
 
-The LLM is treated as an external AI capability integrated into the application.
+### D-20 · Backend conventions · Accepted
+**Decision.** One typed `Settings` (pydantic-settings), settings added only when a phase needs them. `create_app()` factory. Standard `logging`. One JSON error shape `{"error": {"code", "message"}}`, with `AppError` subclasses; unexpected exceptions return a generic message. Business endpoints under `/api/v1`, health endpoints unversioned. Thin routes, logic in services injected through `app/api/deps.py`. `DATABASE_URL` optional and the engine lazy with `pool_pre_ping` (CI runs without a database; the app recovers after a restart; verified). Unit tests use `dependency_overrides`.
+**Why.** Testability, no leaked internals, cheap now and expensive later.
 
----
+### D-21 · EmbeddingService: lazy, shared, behind plain `def` routes · Revisit at Phase 11
+**Decision.** The model loads on first use, on CPU. The API holds one instance (`lru_cache` in `deps.py`). Search and ask routes are plain `def`, so blocking work runs in the thread pool.
+**Why.** Fast imports and tests, no model needed in CI. An `async def` route would freeze the event loop on CPU work.
+**Known costs.** First request about 22 s (about 15 update checks to huggingface.co). No loading lock. `--reload` reloads the model.
+**Revisit.** Phase 11: run offline with a pre-downloaded model; decide between preloading and lazy loading.
 
-## 3.2 Use EmbeddingGemma for Embeddings
+### D-22 · ChunkService replaces in one transaction, validates first · Accepted
+**Decision.** `replace_chunks(document_id, chunks, vectors)` checks counts and 768 values (`ValueError`), raises `NotFoundError` for an unknown document, deletes old chunks and inserts new ones in one transaction, and keeps the old chunks on any failure. An empty list clears the chunks. It does not change `documents.status`.
+**Why.** Reprocessing must not duplicate, and a half-written document must never be visible. A count mismatch is a caller bug, not a user error.
 
-**Decision:**
-Use `google/embeddinggemma-300m` for document and query embeddings.
+### D-23 · Direct ingestion script, no ingestion class · Revisit at Phase 8
+**Decision.** `scripts/ingest_document.py <document_id>` chains download, `process_pdf`, `embed_documents`, `replace_chunks`. Safe to repeat. It is the blueprint for the Airflow tasks.
+**Why.** Four calls do not need a class yet. Status transitions belong to Phase 8.
 
-**Why:**
+### D-24 · Retrieval returns plain objects; `/search` is an inspection endpoint · Accepted
+**Decision.** `RetrievalService.search` returns frozen `RetrievedChunk(document_id, filename, page_numbers, heading, text, similarity)`, with the file name joined in the query. `POST /api/v1/search` exposes it.
+**Why.** Citations need no second lookup; callers never see the ORM row or the 768-number vector. When an answer is bad, the same question on `/search` shows whether retrieval or generation failed.
+**Rejected.** Returning ORM rows (coupling, extra lookup).
 
-* Can run locally.
-* Avoids sending document content to a separate embedding API.
-* Provides a practical embedding model for semantic retrieval.
-* Produces **768-dimensional embeddings** (confirmed in Phase 4 against the model card and on the real model).
+### D-25 · Input limits and stable ordering · Revisit at Phase 7
+**Decision.** `top_k` 1 to 20 (default 5). Question stripped, 1 to 1000 characters. Constants live in `retrieval.py`; schemas import them; the API returns 422, the service raises `ValueError` too. The query orders by distance, `document_id`, `chunk_index`.
+**Why.** A maximum protects the database. A stable order makes tests and evaluation repeatable. The numbers are guesses and are Phase 7 experiments.
+**Known gap.** `ValueError` is not mapped to HTTP; a future endpoint that skips the schema would return 500.
 
-The embedding model can be replaced later if evaluation shows that another model performs better. The model name is one setting (`EMBEDDING_MODEL_ID`), and the database column size is tied to it (see 12.4).
-
-The model is gated on Hugging Face and needs a login (see 12.6). Its weights are in the Hugging Face cache on D: (see 11.3).
-
----
-
-## 3.3 Start With Dense Retrieval
-
-**Decision:**
-Initial retrieval uses vector similarity search with pgvector.
-
-**Why:**
-
-* Simple to implement.
-* Appropriate for the initial RAG system.
-* Provides a measurable baseline.
-* Allows more advanced retrieval techniques to be evaluated later.
-
-Hybrid retrieval, reranking, or other techniques will only be added if evaluation demonstrates a need.
-
-Implemented in Phase 5 as `RetrievalService` (see section 13).
-
----
-
-## 3.4 RAG Must Be Evaluated Before Optimization
-
-**Decision:**
-The first RAG implementation is treated as a baseline.
-
-**Why:**
-
-* Retrieval quality should be measured before adding complexity.
-* Improvements should be based on evidence.
-* Prevents premature implementation of advanced retrieval techniques.
-
-The evaluation dataset will guide future RAG improvements.
+### D-26 · Tests: fakes, hand-made vectors, skipped integration, unique names · Accepted
+**Decision.** Unit tests use fakes and run in CI. Integration tests use the real containers and skip themselves when unavailable; each deletes only what it created. Retrieval integration tests use hand-made vectors (similarity 1.0, 0.7071, 0.0). Test file names must be unique across `tests/` (no `__init__.py`, so pytest identifies modules by file name).
+**Why.** CI has no database, MinIO or model. Fakes cannot catch wrong column types or constraints; integration tests can. Real data stays safe.
 
 ---
 
-# 4. Document Processing Decisions
+## Generation (Phase 6)
 
-## 4.1 Use Docling
+### D-27 · Check changing facts in official documentation first · Accepted
+**Decision.** Before using any fact that changes with time (SDK shape, model names, quotas, data-use terms), check the official source, or a small real call, or ask. Do not rely on memory.
+**Why.** The quotas seen in AI Studio differed from what was assumed, and that changed the model choice (D-28).
 
-**Decision:**
-Docling is used for document parsing and structured extraction.
+### D-28 · Model `gemini-3.5-flash-lite`, set by `GEMINI_MODEL` · Revisit at Phase 7 and before deployment
+**Decision.** Default model `gemini-3.5-flash-lite`; key in `GEMINI_API_KEY` as a `SecretStr`.
+**Why.** Checked 2026-10 in AI Studio: 15 requests per minute, 250,000 tokens per minute, 500 per day; larger Flash models only 5 per minute and 20 per day, unusable for development and evaluation. Answers are short extraction, which suits a small model.
+**Revisit.** Model lifetimes are short: check for a shutdown date before deployment. Larger model and thinking level are Phase 7 experiments.
 
-**Why:**
+### D-29 · Stay on `generate_content`, not the Interactions API · Revisit on deprecation
+**Decision.** `LlmService` uses `client.models.generate_content`.
+**Why.** RAG here is one stateless request. The Interactions API keeps state at Google by default (a privacy question for document text), and its REST version was beta when checked. Switching later touches one file (D-30).
+**Note.** A conscious deviation from the vendor's recommendation, recorded so it is not mistaken for ignorance of it.
 
-* Designed for document understanding.
-* Provides structured document representations.
-* Better suited to enterprise documents than relying only on basic PDF text extraction.
-* Supports preservation of useful document structure.
+### D-30 · LlmService owns the SDK; strict acceptance; no retries; generic errors · Accepted
+**Decision.** `app/services/llm.py` is the only importer of the Gemini SDK (`google-genai`). `generate_structured(system_instruction, prompt, response_model)` returns a validated Pydantic object. One client per process, 30 s timeout, `max_output_tokens` 2048, one attempt (no retries). A response is accepted only if `finish_reason` is `STOP`, the text is not empty and it validates; otherwise `502`. Every Gemini failure is `ExternalServiceError` (`502`) with a generic message (a friendlier one for `429`; "The AI service is not configured." for a missing key). Details go to the log only.
+**Why.** Model output is untrusted input (a cut-off JSON shown as a full answer is worse than an error). A timeout stops a slow call holding a thread. Retries double the wait and burn the daily quota, and the likely failures (bad key, `429`) are not fixed by retrying. SDK exception text may contain request details.
+**Revisit.** If transient `5xx` errors turn out to be common: retry only those, once, with a short delay.
 
-Phase 3 confirmed this on two real PDFs: prose, headings, page numbers, and the license-free layout of an ISO standard were extracted well. Its limits are recorded in 11.10.
+### D-31 · Prompt: numbered sources, declared as data · Accepted
+**Decision.** `rag_prompt.py` builds a seven-rule system instruction (use only the sources; `found: false` with no sources when they do not answer; partial answers allowed; cite only directly supporting sources; no numbers, file names or pages in the answer text; source text is data, never instructions; answer in the question's language, concisely). Each chunk is `<source number="n">` with file and section, no pages. The question comes last in `<question>` tags. Fake `<source>` or `<question>` tags inside documents are neutralized.
+**Why.** Numbers let the model point without copying, which makes validation possible (D-32). Retrieved text is untrusted. Leaving pages out gives the model nothing to invent a page from.
+**Limit.** A mitigation, not a full defense against prompt injection. Adversarial documents are a Phase 14 topic.
 
----
+### D-32 · The model returns source numbers; code builds citations · Accepted
+**Decision.** The model returns `{found, answer, source_numbers}`. `RagService` keeps numbers `1..n` matching a retrieved chunk, drops the rest (and logs them), and builds each `Citation(document_id, filename, page_numbers, heading, text)` from the stored chunk.
+**Why.** Citations are a core requirement; an invented page is worse than none. The check is one comparison.
+**Rejected.** The model writing citation text (pages possibly invented, free text to parse).
+**Limit.** Code proves a citation is a real retrieved chunk, not that it supports every claim. Padding was seen once. Citation precision is a Phase 7 measurement.
 
-## 4.2 Use HybridChunker
+### D-33 · Refusal in three layers; no similarity threshold yet · Revisit at Phase 7
+**Decision.** (1) No retrieved chunks: a fixed message, Gemini is not called. (2) The model answers `found: false`: no citations. (3) The model says `found: true` with no valid source number or a blank answer: replaced by a fixed "not found" message. No threshold; the similarities are logged.
+**Why.** One corpus separates cleanly (answerable at 0.4968 or higher, refused at 0.4144 or lower); on the other a near-miss scored 0.6617, above every answerable question (E-1). One rule works on one corpus and fails on the other, and 14 manual questions cannot pick a number. The model's own `found` was right on all of them. Layer 3 is a safety net, not the main mechanism.
+**Revisit.** Choose or reject a threshold with the Phase 7 evaluation (unanswerable and near-miss questions).
 
-**Decision:**
-Docling's `HybridChunker` is used as the initial chunking strategy.
+### D-34 · `POST /api/v1/ask` · Accepted
+**Decision.** Request `{question, top_k}` (same limits as `/search`), response `{answer, found, citations}`; `422` for bad input, `502` for Gemini failure. Thin plain `def` route; `RagServiceDep` reuses the shared retrieval and embedding objects.
+**Why.** `/search` stays for inspection. `text` in a citation lets a UI show the quote. `found: false` is a field, not an error: "the documents do not say" is a normal result.
 
-**Why:**
+### D-35 · Logs hold numbers only · Accepted
+**Decision.** Never log the question or chunk text. One `RAG:` line per question (chunk count, similarities, found, cited and dropped numbers) and one `Gemini call:` line (model, latency, finish reason, token counts).
+**Why.** Logs outlive requests and are copied around. The numbers are what Phase 7 needs.
 
-* Provides a practical starting point for structured document chunking.
-* Works with the structured representation produced by Docling.
-* Avoids designing a custom chunking algorithm prematurely.
+### D-36 · Free-tier data use decides which documents go to Gemini · Revisit at Phase 12
+**Decision.** On the free tier only fictional, openly licensed or non-sensitive documents go through `/ask`. Ingestion, embeddings and `/search` run locally and send nothing out; only `/ask` calls Gemini.
+**Why.** Google's terms (checked 2026-10): free-tier prompts and responses may be used to improve its products; paid tier not. `/ask` sends retrieved chunks.
+**Revisit.** Phase 12: decide whether a paid key is needed for any real company document.
 
-Chunking strategy can be changed later based on retrieval evaluation.
+### D-37 · Tests never call Gemini · Accepted
+**Decision.** Fake client for `LlmService`, plain chunks for the prompt, fake services for `RagService`, dependency overrides for the endpoint. The one real call is `scripts/smoke_gemini.py`, run by hand with a fictional café. The pre-commit scanner flagged a fake key in a test; fixed with an inline allow comment on that line.
+**Why.** Real calls are slow, cost quota and fail with the network. The behaviour worth testing is ours: strict acceptance, refusal layers, dropped numbers, error mapping.
 
-Phase 3 result (with the default MiniLM tokenizer): chunks averaged 447 to 687 characters, carried page numbers and headings, and skipped page headers and footers by themselves. It keeps a code block intact and writes table cells as `row, column = value`.
-
-Phase 4 result: with the EmbeddingGemma tokenizer the same 512-token budget gives larger chunks (see 12.3).
-
----
-
-## 4.3 Preserve Document Provenance
-
-**Decision:**
-Chunks must retain useful metadata such as document identity, page information, and relevant structural information.
-
-**Why:**
-
-* Enables source citations.
-* Makes retrieved information traceable.
-* Improves debugging and evaluation.
-* Allows the final answer to reference where information came from.
-
-The system should never treat the embedding as a replacement for provenance metadata.
-
-Phase 4 implemented this in the database: `document_chunks` stores the document ID, page numbers, and heading next to each vector (see 12.7). Phase 5 carries it out of the database: every search result keeps the document ID, file name, pages and heading (see 13.1).
-
----
-
-# 5. Data and Storage Decisions
-
-## 5.1 Use PostgreSQL + pgvector
-
-**Decision:**
-PostgreSQL is used as the primary application database and pgvector is used for vector storage.
-
-**Why:**
-
-* One database can store application metadata, document metadata, chunks, and embeddings.
-* Reduces infrastructure complexity.
-* Avoids introducing a separate vector database without a demonstrated need.
-* PostgreSQL is widely used in production systems.
-
-A dedicated vector database may be considered later if scale or requirements justify it.
-
-Phase 4 confirmed that chunks, provenance, and vectors fit in plain PostgreSQL tables (see 12.7). Phase 5 confirmed that one SQL query (cosine distance joined to `documents`) is enough for retrieval (see 13.1).
+### D-38 · Test corpus: fictional policy documents · Accepted
+**Supersedes** the Docling Technical Report as the test corpus.
+**Decision.** Three fictional German-company policy PDFs (workplace policies, smoke-free policy, working hours and vacation), kept outside the repo, are ingested. The Technical Report was deleted from the database (one `DELETE` naming its exact id; chunks cascade) and from MinIO. Eleven more policy PDFs wait for Phase 7. No list or delete endpoint was added: a one-off cleanup does not justify code; reconsider if the UI needs it.
+**Why.** Policy documents are what the product is for; they are fictional, so Gemini's free tier is safe; several overlap on purpose (smoking), which tests citation precision.
+**Note.** Phase 3 to 5 measurements on the Technical Report stay valid as history.
 
 ---
 
-## 5.2 Use MinIO Locally and S3 on AWS
+## Process
 
-**Decision:**
-Original documents are stored in object storage.
-
-Local development:
-
-```text
-MinIO
-```
-
-AWS deployment:
-
-```text
-Amazon S3
-```
-
-**Why:**
-
-* Both provide object-storage semantics.
-* The application can use a storage abstraction rather than being tightly coupled to one provider.
-* Local development remains possible without AWS.
-* The same application design can later be deployed to AWS.
+### D-39 · Documentation system · Accepted (2026-10-13)
+**Decision.** Four project docs, one question each: README (use), ROADMAP (plan and status, with a handoff block at the top), ARCHITECTURE (the system today, with invariants), DECISIONS (why, append-only with status). PROJECT.md holds scope. One fact has one home. Working rules live in a private cross-project kit loaded through the Project instructions. At the end of each phase: ripple check, update the four docs as complete files, one commit, tag.
+**Why.** The old docs reached about 150 KB, copied the same facts into three or four files, and went stale (Phase 6 still "Next" after it was built). Docs are also context budget for the AI collaborator.
+**Rejected.** One doc per phase (more files to keep consistent); patch scripts (against the "complete files" rule).
 
 ---
 
-## 5.3 Separate Documents From Database Data
+## Evidence
 
-**Decision:**
-Original PDF files are stored in object storage, while metadata, chunks, and embeddings are stored in PostgreSQL.
+### E-1 · Phase 6 refusal measurements (manual, through the running API, `gemini-3.5-flash-lite`)
 
-**Why:**
-
-* Object storage is appropriate for files.
-* PostgreSQL is appropriate for structured application data and vectors.
-* Keeps responsibilities clear.
-
----
-
-# 6. Infrastructure Decisions
-
-## 6.1 Docker Is the Portability Layer
-
-**Decision:**
-The application and its local infrastructure are containerized with Docker.
-
-**Why:**
-
-* Provides a reproducible development environment.
-* Reduces differences between development environments.
-* Makes the application easier to deploy.
-* Supports the principle of building the application once and deploying it to different environments.
-
----
-
-## 6.2 Use Docker Compose Locally
-
-**Decision:**
-Docker Compose is used for the local multi-service environment.
-
-Initial services include:
-
-```text
-FastAPI
-Streamlit
-PostgreSQL + pgvector
-MinIO
-Airflow
-```
-
-**Why:**
-
-* Easy to start and stop the local environment.
-* Appropriate for the project's current scale.
-* Avoids unnecessary orchestration infrastructure during development.
-
----
-
-## 6.3 AWS Comes After the Local System Works
-
-**Decision:**
-AWS deployment is a later phase, not a prerequisite for building the application.
-
-**Why:**
-
-* The product should be validated locally first.
-* Cloud infrastructure should not hide application problems.
-* Development remains cheaper and faster.
-* The AWS deployment becomes a deployment exercise rather than a dependency for development.
-
----
-
-## 6.4 Initial AWS Architecture Is Intentionally Simple
-
-**Decision:**
-The initial AWS deployment will primarily use:
-
-```text
-EC2
-RDS PostgreSQL + pgvector
-S3
-IAM
-CloudWatch
-```
-
-**Why:**
-
-* These services are sufficient for the initial application.
-* They provide meaningful exposure to compute, database, storage, identity, and monitoring.
-* They avoid unnecessary AWS service complexity.
-
-Services such as EKS, Lambda, ECS, OpenSearch, Redis, queues, or complex networking will not be introduced unless the application actually needs them.
-
----
-
-## 6.5 Terraform Comes After Manual Understanding
-
-**Decision:**
-AWS infrastructure will first be understood and tested manually before being fully managed with Terraform.
-
-**Why:**
-
-* Terraform should reinforce infrastructure understanding rather than hide it.
-* Makes it easier to understand what Terraform is actually creating.
-* Helps with debugging infrastructure problems.
-
-Terraform becomes the infrastructure-as-code layer after the underlying AWS architecture is understood.
-
----
-
-# 7. Portability Decisions
-
-## 7.1 Same Application, Different Environment
-
-**Decision:**
-The application should not be redesigned when moving from local development to AWS.
-
-Conceptually:
-
-```text
-Local Environment
-    ↓
-MinIO
-PostgreSQL
-Docker
-    ↓
-Same Application
-    ↓
-AWS Environment
-    ↓
-S3
-RDS
-EC2
-```
-
-**Why:**
-
-* Demonstrates proper separation between application logic and infrastructure.
-* Reduces deployment-specific code.
-* Makes the system easier to maintain.
-
----
-
-## 7.2 Use Configuration Instead of Hard-Coded Providers
-
-**Decision:**
-Environment-specific values such as database URLs, storage endpoints, credentials, and API keys are provided through configuration.
-
-**Why:**
-
-* Keeps secrets out of source code.
-* Allows the same application code to run in different environments.
-* Supports local development and future AWS deployment.
-
----
-
-# 8. Engineering Scope Decisions
-
-## 8.1 Do Not Add Technologies Only for the CV
-
-**Decision:**
-A technology will only be added when it provides a meaningful technical purpose.
-
-**Why:**
-
-* Technology count is not the goal.
-* Coherent engineering is more valuable than a large list of tools.
-* Every major technology should be explainable in an interview.
-
----
-
-## 8.2 Avoid Premature Advanced Infrastructure
-
-**Decision:**
-The project will not introduce technologies such as Kubernetes, Kafka, microservices, or dedicated vector databases unless a real requirement appears.
-
-**Why:**
-
-* They increase complexity significantly.
-* They are not required for the initial product.
-* They can distract from the main AI Engineering objective.
-
----
-
-## 8.3 Decisions Can Change
-
-**Decision:**
-No technology decision is considered permanent.
-
-A decision can be changed when:
-
-* evaluation shows that it is insufficient;
-* scale introduces a new requirement;
-* a simpler solution becomes available;
-* deployment constraints change;
-* a real product requirement justifies the change.
-
-The project should evolve based on evidence rather than technology trends.
-
----
-
-# 9. Backend Application Decisions (Phase 1)
-
-## 9.1 Typed Configuration With pydantic-settings
-
-**Decision:**
-All configuration is read into one typed `Settings` object from environment variables and `.env` (`app/core/config.py`). Settings are created once and cached.
-
-**Why:**
-
-* Implements decision 7.2 in practice: nothing environment-specific is hardcoded.
-* Values are validated and typed at startup.
-* Environment variable names follow the `.env` convention (`APP_ENV`, `LOG_LEVEL`, `DATABASE_URL`).
-* Unknown variables are ignored, and each setting is added only when a phase needs it.
-
----
-
-## 9.2 Use an Application Factory
-
-**Decision:**
-The FastAPI app is built by `create_app()` instead of being assembled at import time.
-
-**Why:**
-
-* Tests can build their own isolated app instances.
-* Setup (logging, error handlers, routers) happens in one visible place.
-* Keeps import-time side effects minimal.
-
----
-
-## 9.3 Use Standard-Library Logging
-
-**Decision:**
-Logging uses Python's built-in `logging` module, configured once in `app/core/logging.py`. The level comes from `LOG_LEVEL`.
-
-**Why:**
-
-* Every module only needs `logging.getLogger(__name__)`.
-* No extra dependency is needed for the project's current scale.
-* Logging is essential later for debugging which RAG stage failed.
-
-Structured (JSON) logging may be reconsidered for production if there is a real need.
-
----
-
-## 9.4 One JSON Error Shape
-
-**Decision:**
-Every error response uses `{"error": {"code": "...", "message": "..."}}`. Expected failures raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`). FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server.
-
-**Why:**
-
-* A UI or client handles one error format.
-* Routes do not need their own try/except blocks.
-* Exception text can leak internals (paths, SQL, secrets), so it is not sent to clients.
-
----
-
-## 9.5 Versioned API Prefix; Operational Endpoints Unversioned
-
-**Decision:**
-Business endpoints live under `/api/v1`. Operational endpoints (`/health`, `/health/db`) stay at the root.
-
-**Why:**
-
-* A stable URL prefix is cheap now and expensive to change once a UI depends on it.
-* Health checks are for infrastructure (Docker, AWS), not API consumers, and should not change with API versions.
-
----
-
-## 9.6 Thin Routes, Logic in Services
-
-**Decision:**
-Routes handle HTTP only. Application logic lives in services (`app/services/`), which are provided to routes through FastAPI dependencies. `InfoService` is the minimal example of the pattern.
-
-**Why:**
-
-* Implements the API-layer rule in ARCHITECTURE.md: no business logic inside route functions.
-* Logic can be tested without HTTP.
-* Services and pipeline code can be reused by Airflow later.
-
-No base classes or generic abstractions are used until a real need appears.
-
-Phase 5 followed the pattern: the search route is three lines and calls `RetrievalService` (see 13.2).
-
----
-
-## 9.7 Optional Database URL and Lazy Engine
-
-**Decision:**
-`DATABASE_URL` is optional in `Settings`. The SQLAlchemy engine is created on first use, with `pool_pre_ping` enabled. Database health is a separate endpoint (`/health/db`) from basic liveness (`/health`).
-
-**Why:**
-
-* CI and unit tests have no `.env` and no database, so they must still run.
-* Code that needs the database fails with a clear message instead of a crash at import time.
-* `pool_pre_ping` lets the app recover on its own after the database restarts, which was verified by stopping and starting the Postgres container.
-* Liveness (the process is up) and readiness (its dependencies work) are different questions.
-
----
-
-## 9.8 Test With Dependency Overrides
-
-**Decision:**
-Unit tests replace dependencies such as `get_db` with fakes using FastAPI's `dependency_overrides`. Tests that need a real PostgreSQL are integration tests (`tests/integration/`), added in Phase 2 (see 10.8).
-
-**Why:**
-
-* Unit tests stay fast and run anywhere, including CI.
-* Error handling can be tested deterministically (for example a simulated database outage).
-
----
-
-# 10. Data and Storage Application Decisions (Phase 2)
-
-## 10.1 Use boto3 for Object Storage
-
-**Decision:**
-Object storage is accessed through `boto3` (the S3 API), not the `minio` SDK. MinIO implements the S3 API, so the same code talks to MinIO locally and Amazon S3 on AWS. When `MINIO_ENDPOINT` is set, boto3 uses it; when it is not set, boto3 talks to real S3 with its default credential chain (an IAM role on EC2).
-
-**Why:**
-
-* Implements decisions 5.2 and 7.1 with configuration only: no provider-specific branches in the code.
-* The local environment exercises the same API that AWS will use.
-* No extra abstraction layer is needed (see 10.4).
-
-The `MINIO_*` variable names match the Docker Compose file and are kept for now. They may be renamed to neutral `S3_*` names in Phase 12 if that reads better.
-
-Trade-off: if `.env` is missing locally, boto3 would try real AWS instead of failing loudly, so `.env` must be filled in.
-
----
-
-## 10.2 Alembic for Schema Changes
-
-**Decision:**
-Database schema changes are versioned Alembic migrations in `migrations/`, not `Base.metadata.create_all()`. `migrations/env.py` takes the database URL from `Settings`, so `alembic.ini` holds no real URL or password. Generated files in `migrations/versions/` are excluded from Ruff, and every generated migration is read before it is applied.
-
-**Why:**
-
-* `create_all` can create tables but cannot alter them. Later phases need `document_chunks`, a `vector(768)` column, and `CREATE EXTENSION vector`.
-* The same migration history will run against RDS in Phase 12.
-* One source of truth for configuration (`.env` / environment), as in decision 7.2.
-* Autogenerate is a draft, not a guarantee: it targets old-style typing and long lines that the lint rules reject, and hand-editing every future migration would be wasted effort.
-
-The `CREATE EXTENSION vector` migration was deferred to Phase 4, when pgvector was first needed. It is now done (see 12.7).
-
----
-
-## 10.3 Document Model Choices
-
-**Decision:**
-The `documents` table uses a UUID primary key generated in Python, a unique `storage_key`, and a `status` column stored as a plain string (`uploaded`, `processing`, `processed`, `failed`) rather than a PostgreSQL ENUM. No columns are added before a phase needs them.
-
-**Why:**
-
-* The upload code needs the document ID before the insert, to build the storage key.
-* UUIDs cannot be guessed from the URL, unlike sequential integers.
-* ENUM types are awkward to change in migrations; the application enforces the allowed values.
-* Phase 3 will show which extra fields (for example an error message or page count) are really needed.
-
-Phase 3 outcome: the pipeline did not need any new `documents` column. Phase 4 did not need one either, and neither did Phase 5. If Phase 8 needs an error message or page count, it is added then.
-
----
-
-## 10.4 A Small Storage Service
-
-**Decision:**
-`StorageService` (`app/services/storage.py`) has three methods: `upload`, `download`, `delete`. It is the only code that imports boto3. It works with `bytes`, builds its client lazily and caches it, and maps boto3 errors to `NotFoundError` (missing key) and `ExternalServiceError` (anything else). The application does not create the bucket; the `minio-init` container in Docker Compose does.
-
-**Why:**
-
-* Abstract real variation, not imaginary future variation (ENGINEERING_PRINCIPLES 14): no interface class or plugin system.
-* Routes and the pipeline never see boto3 exceptions.
-* The lazy client lets the app and CI start without storage settings.
-* Passing the client in the constructor lets unit tests use a fake with no network.
-
-Limitation: files are handled as `bytes` in memory. This is acceptable with a 20 MB upload limit; streaming is a future improvement if file sizes require it.
-
----
-
-## 10.5 Upload Order: Validate, Store the File, Then Insert the Row
-
-**Decision:**
-`DocumentService.create` validates the file, uploads it to storage, then inserts the database row. If the insert fails, it rolls back and deletes the uploaded file (best effort). If the upload fails, no row is created.
-
-**Why:**
-
-* A row that points to a missing file is worse than a stored file without a row.
-* Cleanup keeps storage and database consistent in the common failure cases.
-* The cleanup path is verified against real services by an integration test.
-
-Known limit: if the process crashes between the two steps, an orphaned file can remain. A periodic cleanup job is not justified at the current scale.
-
----
-
-## 10.6 Upload Validation and Storage Keys
-
-**Decision:**
-An upload is accepted only if its content type is `application/pdf`, its bytes start with `%PDF-`, it is not empty, and it is within `MAX_UPLOAD_MB` (default 20). The storage key is `documents/<document_id>/<filename>`, where the filename is reduced to its last path component and limited to 255 characters. `storage_key` is internal and is not returned by the API.
-
-**Why:**
-
-* A client can lie about the content type, so the file itself is checked.
-* The UUID in the key prevents collisions when two people upload `policy.pdf`, and keeps the original name readable in MinIO.
-* Browsers can send full paths, which must not become part of the key.
-* Hiding `storage_key` keeps storage details out of the API contract.
-
----
-
-## 10.7 Document Endpoints
-
-**Decision:**
-`POST /api/v1/documents` stores a PDF and returns its metadata (`201`). `GET /api/v1/documents/{id}` returns the metadata of one document. Both follow the thin-route rule (9.6). Multipart uploads need the `python-multipart` package.
-
-**Why:**
-
-* Completes the Phase 2 exit condition through the real API.
-* The GET endpoint costs almost nothing and lets us verify stored rows.
-
----
-
-## 10.8 Integration Tests Skip When Services Are Unavailable
-
-**Decision:**
-Tests in `tests/integration/` use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable. Each test removes only the rows and files it created.
-
-**Why:**
-
-* CI has neither service and must stay green; unit tests with fakes cover the logic there.
-* Fakes cannot catch wrong column types, a broken unique constraint, or bad storage keys. Integration tests can.
-* Cleaning only what a test created keeps real local data safe.
-
-Phase 4 followed this for chunks: the `db` fixture deletes the documents a test created, and the database cascade removes their chunks (see 12.8). Phase 5 followed it for retrieval: the test document is created and deleted by a fixture, and the real Technical Report in the database is never touched (see 13.8).
-
----
-
-# 11. Document Processing Decisions (Phase 3)
-
-## 11.1 Look at Real Output Before Designing
-
-**Decision:**
-Before writing any pipeline code, Docling was run on two real PDFs and its output was inspected: pages, headings, tables, chunks, content layers, and control characters. The chunk schema and the cleaning rules come from those measurements. The throwaway inspection scripts were deleted afterwards; only `scripts/explore_docling.py` and `scripts/run_pipeline.py` were kept.
-
-**Why:**
-
-* `PROJECT.md` says the metadata schema should be based on what the libraries actually provide, not on invented fields.
-* Several assumptions were wrong until measured: the first sample (a research paper) turned out to contain screenshots of another paper, and picture text never reached the chunks.
-* The two samples were different on purpose. A research paper (Docling Technical Report, 9 pages) and a policy-style standard (ISO/IEC 27001:2022, 26 pages) behave very differently, and the second one is closer to the project's target content.
-
----
-
-## 11.2 CPU-Only PyTorch Through an Explicit uv Index
-
-**Decision:**
-Docling is installed together with `torch` and `torchvision` listed as direct dependencies. `pyproject.toml` points both to an explicit `pytorch-cpu` index (`https://download.pytorch.org/whl/cpu`, `explicit = true`).
-
-**Why:**
-
-* The GTX 1050 has 4 GB of VRAM, too little to be useful for Docling's models, and the CUDA build adds several GB for no benefit.
-* `[tool.uv.sources]` only applies to packages listed directly, so `torch` must be a direct dependency for the setting to work.
-* On Linux, PyPI's `torch` is the CUDA build, so without this setting GitHub Actions would download CUDA libraries it cannot use. CI stayed green with this setup.
-* `explicit = true` means that index is used only for the packages named in `sources`.
-
-Measured speed on this CPU once models are cached: about 10 s per page (88 s for 9 pages). The first runs took 311 to 338 s, because they included model downloads.
-
----
-
-## 11.3 Caches Live on D:, Outside the Repository
-
-**Decision:**
-`UV_CACHE_DIR` and `HF_HOME` are user environment variables pointing to `D:\Backup\School\Project\_caches\uv` and `D:\Backup\School\Project\_caches\huggingface`. The old uv cache on C: was cleaned. The EmbeddingGemma model already downloaded on C: was moved, not downloaded again.
-
-**Why:**
-
-* C: (the SSD) had about 17 GB free; Docling, PyTorch and the models need several GB.
-* uv uses hardlinks only within one drive. With the cache and `.venv` both on D:, PyTorch is stored once instead of twice.
-* The `_caches` folder is outside the repository, so it cannot be committed by accident.
-
-Harmless side effect: Hugging Face warns that Windows has no symlink support, so its cache uses somewhat more space.
-
-Phase 4 note: the Hugging Face login token is saved under `HF_HOME` too, so it is also outside the repository (see 12.6).
-
----
-
-## 11.4 Chunk Schema From What Docling Provides
-
-**Decision:**
-The pipeline's `Chunk` is a frozen dataclass with three fields: `text`, `page_numbers` (a list of ints), and `heading` (a string or `None`). `document_id` and `embedding` are not part of it: the document ID is attached when chunks are stored, and the embedding is produced by the embedding service.
-
-**Why:**
-
-* `chunk.meta.doc_items` carries page numbers per item, and `chunk.meta.headings` carries the headings. Nothing was invented.
-* Chunks can span pages (for example pages 2 and 3), so a single page number would be wrong for citations. A citation can show a range.
-* A plain dataclass keeps the pipeline free of Docling, FastAPI, and database types.
-
-Phase 4 kept this schema unchanged: `ChunkService` receives the document ID from its caller, and `EmbeddingService` returns plain lists of floats next to the chunk list.
-
----
-
-## 11.5 Keep Only the Nearest Heading
-
-**Decision:**
-`heading` is the last entry of `chunk.meta.headings`. No heading hierarchy is built.
-
-**Why:**
-
-* Docling reported every heading as level 1 on both PDFs ("3.1 PDF backends" and "Abstract" alike), so heading levels are unreliable.
-* The heading text itself ("6.1.2 Information security risk assessment") is a good section label for a citation.
-
----
-
-## 11.6 Four Cleaning Rules, Each Backed by Data
-
-**Decision:**
-The pipeline applies exactly these rules:
-
-1. Drop chunks that come from the table of contents (11.7).
-2. Remove the license watermark line (a line starting with `--` made of backticks, commas and hyphens, at least 15 characters and containing a backtick).
-3. Strip the invisible characters `\x08` (backspace) and `\ufeff` (byte-order mark) from text and headings.
-4. Drop chunks that are empty after cleaning.
-
-**Why:**
-
-* The ISO PDF produced 156 chunks; 84 were table-of-contents lines with dot leaders, 95 contained control characters (84 of them in the table of contents), and 14 contained the watermark. After the rules, 72 chunks remain (measured with the MiniLM tokenizer; 58 with the EmbeddingGemma tokenizer, see 12.3), with no dot leaders, watermarks or invisible characters.
-* `\x08` is invisible in a UI but would end up in the database, in the embedded text, and in the prompt sent to Gemini.
-* The watermark appeared as body text on most pages and as a page footer on some, so it cannot be removed by content layer alone.
-* The watermark pattern requires a backtick so that an ordinary line of dashes is never removed (covered by a unit test).
-
-Page headers and footers need no rule: Docling puts them in the `FURNITURE` layer and the chunker skips them. Text inside pictures needs no rule either: only 2 of 88 items in the ISO chunks sat inside a picture, while 684 picture-text items existed in the Technical Report, and almost none reached the chunks.
-
----
-
-## 11.7 Filter the Table of Contents After Chunking, by Label
-
-**Decision:**
-`chunk_document` drops any chunk whose `doc_items` include an item labelled `document_index`. The Docling document itself is not modified.
-
-**Why:**
-
-* Docling labels the table of contents `document_index` (a 47-row table, 60,335 characters as Markdown), so a label check is more reliable than a text pattern.
-* Filtering after chunking is simpler and leaves Docling's objects untouched. It costs 84 chunks built and thrown away, which is negligible.
-* This is the source of the very long table-of-contents chunk that triggers the chunker's token-length warning (16,494 tokens with MiniLM, 2,380 with the EmbeddingGemma tokenizer). The warning is harmless: the chunker only counts tokens, no model reads that text, and the chunk is dropped.
-* The rule only works when Docling detects the table of contents. A PDF whose contents page is not detected would keep its dot-leader chunks; Phase 7 evaluation or a new sample would show it.
-
----
-
-## 11.8 No Minimum Chunk Size
-
-**Decision:**
-Only chunks that are empty after cleaning are dropped. There is no length threshold.
-
-**Why:**
-
-* There is no evidence that small chunks hurt retrieval. The smallest real chunk was 11 characters (`(normative)`), which is harmless.
-* A threshold would be a tuning knob without data (ENGINEERING_PRINCIPLES 11). If Phase 7 shows tiny chunks hurt, we add it then.
-
----
-
-## 11.9 Pipeline Structure: Small Stages, Injectable Chunker
-
-**Decision:**
-`app/pipeline/` holds `models.py`, `extract.py`, `chunk.py`, `clean.py`, and `process.py`. `process_pdf(path)` chains extract, chunk, clean. The Docling converter is created once and cached, because building it loads models. `chunk_document` takes an optional chunker argument.
-
-**Why:**
-
-* Each stage is understandable and testable alone (ENGINEERING_PRINCIPLES 7), and Airflow can later call the same functions.
-* `clean.py` is made of pure functions, so its 13 tests need no Docling and run in a fraction of a second, using the exact junk strings found in the real PDFs.
-* The injectable chunker lets the 6 chunk tests use fake chunks, so no model is loaded.
-
-Scripts that import from `app` run as modules (`uv run python -m scripts.run_pipeline`), because running a file directly puts only the `scripts/` folder on the Python path.
-
----
-
-## 11.10 Known Limitations Accepted for Now
-
-**Decision:**
-These problems were found and are documented, not fixed:
-
-* **Text and tables inside embedded images are unreliable.** Page 8 of the Technical Report is a screenshot of another paper; Docling read it as page text, which produced duplicated paragraphs and badly structured tables with OCR errors. No code filter exists for this.
-* **Some headings are wrong or missing.** A running page header (`ISO/IEC 27001:2022(E)`) was read as a heading on pages 8 and 14, and the `9.2` heading was missed, so the 9.2.1 text sits under `9.1`. Front-matter chunks can carry a wrong heading (for example `Version 1.0` for an author list).
-* **Tables can lose their header row** (Annex A of ISO 27001 shows `5.12, 1 = Classification...`), and a table can be split across chunks, so the second part has no caption. The text and the control IDs remain retrievable.
-* **Rows without a separator line merge** (Table 1 of the Technical Report shows `4 16` and `177 s 167 s`). All the data is present.
-
-**Why:**
-
-* The sample corpus is policy-style prose, where these cases are rare. A rule such as "ignore a heading that repeats on several pages" would also remove legitimate repeated captions like `Table A.1 (continued)`.
-* Advanced table options or heavier models were rejected: the one real table was already acceptable, and no setting makes 5 pt screenshots readable.
-* Phase 7 evaluation will show whether any of these affect answers and citations. Questions about tables and mislabelled sections should be part of the evaluation dataset.
-
-Phase 4 note: because the heading is now part of the embedded text (12.2), a wrong heading can slightly mislead a vector. The Phase 7 experiment "heading versus `none`" tests this.
-
-Phase 4 also found a candidate fix to try in Phase 7: HybridChunker has a `repeat_table_header` option that repeats a table's header in every chunk of that table.
-
----
-
-## 11.11 The Chunker and the Embedding Model Use the Same Tokenizer
-
-**Decision:**
-HybridChunker measures chunk size with the tokenizer of the embedding model (`EMBEDDING_MODEL_ID`, EmbeddingGemma), with a 512-token budget. Implemented in Phase 4 (`app/pipeline/chunk.py`). How the text is formatted for embedding is decided in 12.2.
-
-**Why:**
-
-* Chunk size should be measured with the tokenizer of the model that embeds the chunks; token counts differ between tokenizers. The Docling documentation says the same.
-* The MiniLM tokenizer was used only during Phase 3 as HybridChunker's default and is not used anywhere else.
-
-The effect on chunk sizes is recorded in 12.3.
-
----
-
-## 11.12 Sample Documents Stay Local
-
-**Decision:**
-Sample PDFs and Docling output stay in `data/sample_docs/`, which is git-ignored (`data/**/*.pdf` and `data/sample_docs/output/`). `data/eval/` stays trackable. The ISO/IEC 27001 standard is copyrighted and is used locally only.
-
-**Why:**
-
-* The repository is public and must not contain third-party copyrighted documents or large generated JSON.
-* The final demo and the Phase 7 evaluation dataset need an openly licensed document.
-* The evaluation dataset should be JSON or YAML, because `.gitignore` also ignores `data/**/*.csv`.
-
----
-
-# 12. Embedding Decisions (Phase 4)
-
-## 12.1 Check the Model Card Before Writing Code
-
-**Decision:**
-Before writing the embedding service, the model card, the installed packages, and the model's behavior on a few sentences were checked. Only then was code written.
-
-**Why:**
-
-* Three assumptions were open at the start of the phase: the prompts, the maximum input length, and the installed packages.
-* The model card answered them: queries and documents use different prompts, the input limit is 2048 tokens, vectors are 768-dimensional (smaller sizes are possible through Matryoshka truncation), and `float16` is not supported (use `float32` or `bfloat16`).
-* `sentence-transformers` and `transformers` were already installed (through Docling and earlier work), so no AI package had to be added. Only the small `pgvector` package was new (see 12.7).
-
-Two short checks confirmed the behavior on this machine: 768 dimensions, max sequence length 2048, normalized vectors (norm 1.0000), and the right document ranked first with and without prompts. With prompts the margin was larger (3 sentences only, an illustration, not evidence).
-
----
-
-## 12.2 Embed `title: <heading> | text: <chunk>`, Built by Our Own Code
-
-**Decision:**
-A chunk is embedded as the string `title: {heading or "none"} | text: {chunk text}`. The string is built by `build_document_text` in `app/services/embeddings.py` from our own `Chunk`, and passed to the model's plain `encode`. Questions use the model's `encode_query`.
-
-**This replaces** the earlier plan (Phase 3 version of this decision) to embed `chunker.contextualize(chunk)`.
-
-**Options considered:**
-
-| | A. `chunker.contextualize(chunk)` | B. Build the string ourselves (chosen) |
+| Question (policy corpus) | Top similarity | Result |
 |---|---|---|
-| Where it happens | In the chunking stage, needs the raw Docling chunk | In the embedding stage, needs only our `Chunk` |
-| Effect on `Chunk` | Either pollutes `text` with the heading or needs a new field | None |
-| Pipeline independence | The embed stage would depend on Docling objects | The embed stage works on plain data |
-| Format | Docling's own (heading, newline, text) | The model's native `title: ... \| text: ...` |
+| Confidential documents no longer needed | 0.4968 | found: shred; page 2, section 2 |
+| Paid vacation days (PTO file not ingested) | 0.2833 | refused |
+| Paid vacation days (after ingesting it) | 0.5531 | found: 30 days; section 3.1 |
+| Standard working hours | 0.5862 | found: 40 h per week; section 2.1 |
+| Where may employees smoke (two documents) | 0.6697 | found; cited the Smoke-Free table, four sites correct |
+| Alcohol at work | 0.6489 | found; two sources |
+| Dress code (file not ingested) | 0.4144 | refused |
+| Notice period on resigning (file not ingested) | 0.3946 | refused |
 
-**Why B:**
+On the Technical Report: a near-miss about a number the paper does not report scored 0.6617 (higher than every answerable question) and the model's `found: false` refused it. A French question retrieved the same chunk as the English one (0.5802 against 0.5792) and was answered in French. Gemini latency 0.6 to 1.1 s, about 1,000 to 1,400 prompt tokens, 40 to 120 output tokens. Ingestion of the three policy PDFs: 21, 11, 32 chunks (pipeline 143, 108, 94 s; embeddings 45, 38, 80 s). These are a handful of questions, not an evaluation.
 
-* The model was trained with a document prompt that has a title slot, and the model card says a real title improves quality.
-* The model's own `encode_document` always writes `title: none`, so it cannot carry our heading. Building the string ourselves can.
-* `Chunk` stays unchanged and the embedding stage stays independent of Docling (decisions 2.2 and 11.4).
-* Verified: without a heading, our string gives the same vector as the model's own `encode_document` (cosine similarity 1.0000).
-
-**Known trade-off:** some headings are wrong (11.10), and a wrong title can slightly mislead the vector. The Phase 7 experiment "heading versus `none`" will measure it.
-
-The stored `text` column holds the plain chunk text, not the formatted string. The formatted string is only what the model sees, and it is rebuilt from `heading` and `text` when needed.
-
----
-
-## 12.3 Keep 512 Tokens; Chunks Became Larger
-
-**Decision:**
-`MAX_CHUNK_TOKENS` stays 512 after switching to the EmbeddingGemma tokenizer, even though the model accepts 2048. Chunk size is tuned later, with evaluation data.
-
-**What happened:**
+### E-2 · Chunk size with the two tokenizers (512-token budget; EmbeddingGemma as the ruler)
 
 | Document | MiniLM (Phase 3) | EmbeddingGemma |
 |---|---|---|
 | Technical Report | 49 chunks, avg 688 chars, 181 tokens | 31 chunks, avg 1088 chars, 287 tokens |
 | ISO 27001 | 72 chunks, avg 691 chars, 136 tokens | 58 chunks, avg 858 chars, 169 tokens |
 
-Both rows were measured with the EmbeddingGemma tokenizer as the ruler. No chunk exceeds 512 tokens.
+No chunk exceeds 512 tokens. Embedding speed 1.6 s per chunk on this CPU (58 chunks in 94 s). The ISO PDF: 156 raw chunks, 84 contents junk, 95 with control characters, 14 with the watermark.
 
-**Why:**
-
-* MiniLM has a small vocabulary and splits text into many tokens; EmbeddingGemma has a much larger one. The same 512-token budget therefore holds 30 to 60% more text.
-* An average of 170 to 290 tokens is a normal RAG chunk size and far below the model's 2048 limit.
-* There is no evidence that a different size is better. Chunk size (for example 256 versus 512 versus 1024) is a Phase 7 experiment and a one-line change.
-
-Earlier statements that the switch would "keep chunks close to Phase 3" were wrong; the number stayed the same but the amount of text did not.
-
----
-
-## 12.4 One Model Setting, One Dimension Check
-
-**Decision:**
-The embedding model is the single setting `EMBEDDING_MODEL_ID` (default `google/embeddinggemma-300m`), read by both the chunker tokenizer and the embedding service. `EmbeddingService` checks the model's output size against `EMBEDDING_DIMENSIONS` (768, defined next to the database model) when the model loads, and raises a clear error if they differ.
-
-**Why:**
-
-* The chunker's tokenizer and the embedding model must always be the same model (11.11). One setting prevents two copies from drifting apart.
-* The database column is `vector(768)`. Setting a different model in the environment would otherwise fail later with a confusing database error.
-* Changing to a model with another size needs a new migration. The check makes that visible immediately.
-
----
-
-## 12.5 EmbeddingService: Lazy Loading, CPU, Separate Methods
-
-**Decision:**
-`EmbeddingService` (`app/services/embeddings.py`) has `embed_documents(chunks)` and `embed_query(question)`. The model is loaded on first use, on CPU. The constructor accepts a model, so unit tests pass a fake.
-
-**Why:**
-
-* Importing `sentence_transformers` loads torch, which takes seconds. Lazy loading keeps imports and unit tests fast and lets CI run without the model.
-* Documents and queries need different formats (12.2), so they are separate methods and the caller cannot mix them up.
-* The GTX 1050 (4 GB) is not used; the model is small and the CPU is enough (1.6 s per chunk).
-* The 6 unit tests use a fake model; no download is needed.
-
-The API now holds one shared instance for all requests (done in Phase 5, see 13.3).
-
-Measured speed: 58 ISO chunks in 94 s (1.6 s per chunk); 31 chunks of the Technical Report in 75 s including model loading.
-
----
-
-## 12.6 The Gated Model Needs a Hugging Face Login
-
-**Decision:**
-EmbeddingGemma requires accepting Google's license and logging in (`uv run hf auth login`). The token lives under `HF_HOME` on D:, outside the repository.
-
-**Why:**
-
-* Loading the weights through `transformers` had worked earlier, but `sentence-transformers` also downloads small module files (for example `4_Normalize/config.json`), and the gated repository answered those requests with 401 until a login existed.
-* The fix is authentication, not code. It downloads only a few tiny files, not the 1.2 GB weights again.
-
-Consequences for later phases (recorded in ROADMAP.md):
-
-* Docker image and Airflow worker (Phases 8 and 11): `HF_TOKEN` as a secret in the environment, or models pre-downloaded into a volume. Never baked into an image or committed.
-* AWS (Phase 12): the same, through the deployment's secret mechanism.
-* CI never needs it, because tests use fakes and the model loads lazily.
-
----
-
-## 12.7 The `document_chunks` Table
-
-**Decision:**
-Migration `3f9a7c2d1e84` enables pgvector (`CREATE EXTENSION IF NOT EXISTS vector`) and creates `document_chunks`:
-
-* `id`: UUID primary key, generated in Python (same pattern as `documents`)
-* `document_id`: foreign key to `documents.id` with `ON DELETE CASCADE`
-* `chunk_index`: integer, the chunk's order in the document
-* `text`: the chunk text
-* `page_numbers`: PostgreSQL `integer[]`
-* `heading`: text, nullable
-* `embedding`: `vector(768)`, NOT NULL
-* `created_at`: set by the database
-* a unique constraint on `(document_id, chunk_index)`
-
-No vector index (HNSW or IVFFlat) is created.
-
-**Why:**
-
-* Cascade: deleting a document removes its chunks, so no orphans are possible. Tested against the real database.
-* `integer[]` stores the page range of a chunk without a join table (chunks can span pages).
-* `NOT NULL` plus `vector(768)`: the database rejects a missing or wrong-sized vector, which implements "vector dimension validation" with no extra code.
-* The unique constraint stops duplicate chunks when a document is processed twice. Its index also serves "all chunks of a document", so a separate index would be redundant.
-* No vector index: with about 30 to 60 chunks per document an exact scan is instant. An approximate index would make results approximate for no benefit. It is added only if search time becomes measurable.
-* The migration was written by hand (autogenerate does not produce `CREATE EXTENSION`) and read before it was applied. `upgrade` creates the extension first, then the table; `downgrade` does the reverse. A downgrade and upgrade round trip was verified. RDS PostgreSQL supports the same `CREATE EXTENSION`, so the migration will run there too (Phase 12).
-* The `pgvector` Python package provides the `Vector` column type and `cosine_distance`. It is a small package; the database extension is separate.
-
-The pre-commit secret scanner flagged the random hex revision IDs of the migration as a possible secret. The fix is an inline `# pragma: allowlist secret` comment on those two lines, not a rule that disables the scanner for the whole migrations folder, so a real secret pasted into a migration would still be caught.
-
----
-
-## 12.8 ChunkService: Replace in One Transaction, Validate First
-
-**Decision:**
-`ChunkService.replace_chunks(document_id, chunks, vectors)` (`app/services/chunks.py`):
-
-1. Validates that the number of chunks equals the number of vectors and that every vector has 768 values. A mismatch raises `ValueError` before anything is touched.
-2. Raises `NotFoundError` if the document does not exist.
-3. Deletes the document's old chunks and inserts the new ones in one transaction. Any failure rolls back, so the old chunks survive.
-4. Returns how many chunks were stored. An empty list clears the document's chunks.
-
-The document ID comes from the caller; `documents.status` is not changed.
-
-**Why:**
-
-* Replace, not append: processing a document twice must not create duplicates, and a half-written document must never be visible.
-* A count or size mismatch is a bug in the caller, not a user error, so it is a `ValueError`, not an API error.
-* A clear `NotFoundError` is better than a foreign-key error from the database.
-* Embedding (the model) and storing (the database) are different responsibilities. Separate services keep the storage code testable without loading the model.
-* The status transitions (`uploaded → processing → processed | failed`) belong to orchestration (Phase 8).
-
-Tests: 2 unit tests (input rejected before anything is deleted) and 8 integration tests on the real PostgreSQL with small fake vectors: provenance and vectors round trip, replace removes old chunks, empty replacement, cascade on document deletion, rejected input keeps old chunks, unknown document, failed commit keeps old chunks, one row per `(document, chunk_index)`. The failed-commit test is the one that proves the transaction behavior.
-
----
-
-## 12.9 Cosine Distance on Normalized Vectors
-
-**Decision:**
-Similarity search uses pgvector's cosine distance. Similarity is reported as `1 - cosine_distance`.
-
-**Why:**
-
-* The model outputs vectors of length 1.0000, so cosine similarity and dot product rank identically.
-* Cosine is the standard choice and stays correct if the embedding model is replaced by one that does not normalize.
-
-The query shape was proven in Phase 4 with a throwaway check: order by `DocumentChunk.embedding.cosine_distance(query_vector)`, join to `documents` for the file name. The real retrieval service is in Phase 5 (see 13.1).
-
----
-
-## 12.10 Direct Ingestion Script, No New Service Class
-
-**Decision:**
-`scripts/ingest_document.py <document_id>` runs the whole chain for an uploaded document: download the PDF from storage, `process_pdf`, `embed_documents`, `replace_chunks`. It is kept in the repository. It does not change `documents.status`, and there is no "ingestion service" class.
-
-**Why:**
-
-* It is the direct execution mode of decision 2.3, and the blueprint for the Phase 8 Airflow tasks, which will call the same functions.
-* A script that chains four calls does not need a class yet (ENGINEERING_PRINCIPLES 14).
-* Running it again replaces the chunks, so it is safe to repeat.
-
-Verified on the Technical Report: 31 chunks stored (the same count as the earlier comparison), 768 dimensions on every row, a chunk spanning pages `{1,2}` stored correctly as an array. Timing: 128 s for the pipeline plus 75 s for embeddings.
-
----
-
-## 12.11 Dense Search Never Says "Not Found"
-
-**Observation (not a decision to fix yet):**
-Vector search always returns the nearest chunks, even when the document cannot answer.
-
-Measured on the stored Technical Report with three questions:
-
-* in-scope, tables: top similarity 0.55 (correct chunk first);
-* in-scope, OCR: top similarity 0.58 (correct chunk first, a bibliography chunk second at 0.43);
-* unrelated (vacation days): top similarity 0.07.
-
-**Why this matters:** refusing to answer needs a similarity threshold, the LLM's own judgement from the prompt, or both. The gap between in-scope and unrelated scores is encouraging, but it was measured on three questions and one document, so no threshold is chosen now. The threshold and the refusal behavior are set with evaluation data in Phases 6 and 7, including questions the documents cannot answer and near-miss questions on the same topic.
-
-Other observations carried to Phase 7: bibliography chunks can rank high for questions that mention a cited tool; the second and third results of a question can be only loosely related when a document has few chunks.
-
-Phase 5 reproduced the same numbers through the API and added no new observation that changes this decision (see 13.9).
-
----
-
-# 13. Retrieval Decisions (Phase 5)
-
-## 13.1 RetrievalService Returns Plain Objects, Not Database Rows
-
-**Decision:**
-`RetrievalService.search(question, top_k)` (`app/services/retrieval.py`) embeds the question with `EmbeddingService.embed_query`, runs one pgvector query, and returns a list of `RetrievedChunk`. `RetrievedChunk` is a frozen dataclass with `document_id`, `filename`, `page_numbers`, `heading`, `text` and `similarity`. The query orders `document_chunks` by cosine distance to the query vector, joins `documents` for the file name, and takes the top K. The service takes the database session and the embedding service as constructor arguments.
-
-**Options considered:**
-
-| | A. Plain result object (chosen) | B. Return `DocumentChunk` rows |
-|---|---|---|
-| What the caller receives | Only the fields it needs | The whole ORM object, including the 768-number vector |
-| Coupling | None to SQLAlchemy | Every caller depends on the database layer |
-| File name for citations | Included (joined in the query) | A second lookup per hit |
-| Testing callers | Build a dataclass | Build ORM objects |
-
-**Why A:**
-
-* Phase 6 builds citations from exactly these fields, so it needs no second lookup. This implements decision 4.3 (provenance) on the way out of the database.
-* The vector is never needed after the search, and callers should not see it.
-* It follows the same idea as 11.4: plain dataclasses between layers. The API gets its own Pydantic schema, as with `DocumentResponse`.
-* This is a common industry pattern (services return their own data types instead of database rows); small projects sometimes skip it, so it is a trade-off, not a law.
-
-The same service takes a fake embedding service in tests, so ranking can be tested with hand-made vectors and no model (see 13.8).
-
----
-
-## 13.2 A `POST /api/v1/search` Inspection Endpoint
-
-**Decision:**
-`POST /api/v1/search` accepts `{question, top_k}` and returns `{results: [...]}`, where each result has the `RetrievedChunk` fields. The route is thin (9.6): it calls `RetrievalService` and converts the results to the Pydantic response. It is an inspection endpoint, not the product's question endpoint; the answer endpoint (`/ask`) arrives in Phase 6 and does not replace it.
-
-**Why:**
-
-* Without it, retrieval could only be tried from a script. With it, a question can be typed into `/docs` and the chunks seen at once.
-* It supports ENGINEERING_PRINCIPLES 19 (debug the root cause): when a later answer is bad, the same question can be sent to `/search` to see whether retrieval or generation is at fault.
-* It costs about 30 lines. The Phase 9 UI or the Phase 7 evaluation can reuse it.
-* It is a POST because the question travels in the request body.
-
-It was optional, and was added because it gives the first real end-to-end check of Phase 5 through the API.
-
----
-
-## 13.3 One Shared EmbeddingService, Loaded Lazily, Behind a Plain `def` Route
-
-**Decision:**
-`app/api/deps.py` provides `get_embedding_service`, decorated with `lru_cache`, so the process creates one `EmbeddingService`. The model inside it still loads on first use (12.5), so the first search pays the loading time. The search route is a plain `def`, not `async def`.
-
-**Options considered for loading time:**
-
-| | Lazy (chosen) | Preload at startup |
-|---|---|---|
-| Server start | Instant; `/health` and tests are unaffected | Seconds slower; fails early if the Hugging Face login or model is missing |
-| First search | Slower, once | Fast |
-| Tests and CI | No change | Every `create_app()` would need a model override |
-
-**Why lazy:**
-
-* It keeps startup, `/health` and every existing test simple.
-* Preloading only matters when the container health check and startup behavior are designed. It is revisited in Phase 11, where it becomes a real question.
-
-**Why one instance:** the model takes seconds to load and uses memory, so it must never be created per request.
-
-**Why `def` and not `async def`:** embedding is blocking CPU work. In an `async def` route it would freeze the event loop and stop every other request. FastAPI runs `def` routes in a thread pool, so the server stays responsive. The document routes already use `def` for the same reason.
-
-**Known trade-offs:**
-
-* Two simultaneous first requests could both load the model, because there is no lock. For one developer this only wastes time, so no locking code is added (ENGINEERING_PRINCIPLES 3).
-* Measured: the first request took about 22 s (not the 5 to 10 s estimated earlier). The load makes about 15 requests to huggingface.co to check for updates even though the files are cached. In Phase 11 the containers should run offline with the model pre-downloaded.
-* `uvicorn --reload` restarts the process on code changes, so the model loads again on the next first search.
-
----
-
-## 13.4 Input Limits: `top_k` 1 to 20 (Default 5), Question 1 to 1000 Characters
-
-**Decision:**
-`top_k` defaults to 5 and must be between 1 and 20. The question is stripped of surrounding whitespace and must be between 1 and 1000 characters.
-
-**Why:**
-
-* Without a maximum `top_k`, a client could ask for 100,000 chunks and slow the database.
-* An empty question cannot be embedded in a useful way.
-* The model accepts up to 2048 tokens, so 1000 characters is a safe, simple guard.
-* The numbers are guesses, not measurements (ENGINEERING_PRINCIPLES 12). They are listed as Phase 7 experiments (ROADMAP.md): the right `top_k` depends on how many chunks the prompt should carry, which only evaluation can show.
-
-An empty database or a question with no match returns an empty list, not an error.
-
----
-
-## 13.5 Limits Live in the Service; Two Layers Check Them
-
-**Decision:**
-`DEFAULT_TOP_K`, `MAX_TOP_K` and `MAX_QUESTION_CHARS` are constants in `app/services/retrieval.py`. The Pydantic schemas in `app/schemas/search.py` import them, and the request model strips whitespace before checking length. The API therefore rejects bad input with `422 validation_failed` (the standard error shape, through the existing validation handler) before the service runs. The service validates again and raises `ValueError`.
-
-**Why:**
-
-* The limits are defined once, so the API and the service cannot drift apart.
-* The API check gives users a clean 422. The service check protects the service from other callers (a script, the Phase 6 RAG service, Airflow).
-* A bad value reaching the service is a bug in the caller, not a user mistake, so it is a `ValueError`, the same rule as 12.8.
-
-Known gap: `ValueError` is not mapped to an HTTP error. Through `/search` it cannot happen, because the schema checks first. A future endpoint that skips the schema would return a generic 500. This is accepted until such an endpoint exists.
-
----
-
-## 13.6 Stable Ordering With Tie-Breakers
-
-**Decision:**
-The query orders by distance, then `document_id`, then `chunk_index`.
-
-**Why:**
-
-* If two chunks have exactly the same distance, the database may return them in any order, and the order can change between runs.
-* A stable order makes tests and later evaluation repeatable (ROADMAP Phase 7 exit condition).
-* It costs nothing, and does not change the result when distances differ.
-
----
-
-## 13.7 Still Deferred: Threshold, Document Filter, Vector Index, Hybrid Search
-
-**Decision:**
-Phase 5 adds none of these:
-
-* **Similarity threshold for "not found":** chosen with evaluation data (Phases 6 and 7), as decided in 12.11. The service returns the similarity of every hit, so the threshold can be applied later without changing the service's shape.
-* **Filter by document:** no requirement exists; it is a small change if one appears.
-* **HNSW or IVFFlat index:** an exact scan is instant at tens of chunks per document, and an index would make results approximate for no benefit (12.7).
-* **Hybrid search, reranking, query expansion:** only if evaluation shows dense retrieval fails (decisions 3.3 and 3.4).
-
-**Why:**
-
-* "Evaluate before optimizing" (ENGINEERING_PRINCIPLES 11): the only data so far is three questions on one document.
-
----
-
-## 13.8 Tests: Hand-Made Vectors, and Test Files Need Unique Names
-
-**Decision:**
-The retrieval service is tested at three levels:
-
-* 7 unit tests (parametrized) check that an empty or too long question and a `top_k` outside 1 to 20 are rejected before the database or the model is touched (`None` stands in for both).
-* 3 integration tests use the real PostgreSQL with a fake embedding service and three hand-made unit vectors: A (same direction as the query, similarity 1.0), B (45 degrees away, similarity 0.7071) and C (orthogonal, similarity 0.0). They check the ranking, the full provenance round trip (document ID, file name, pages, heading including `None`), `top_k`, and that the question is stripped before embedding.
-* 8 unit tests for the endpoint use a fake retrieval service: response fields, the default `top_k`, trimming, and six invalid bodies that must return `422` with the standard error shape and never reach the service.
-
-**Why:**
-
-* Hand-made vectors give a known ranking without loading the model, so the test checks the SQL, not the model.
-* The real Technical Report stays in the database during the tests. The integration test only asserts that A and B come first, which a real chunk cannot beat against a one-axis query vector, and its fixture deletes only its own document (10.8).
-* The real model is checked manually through the running API (13.9).
-
-**Rule found in Phase 5:** the `tests/` folders have no `__init__.py`, so pytest identifies a test module by its file name alone. Two files with the same name in `tests/unit/` and `tests/integration/` make collection fail with "import file mismatch". Every test file name must therefore be unique across all of `tests/`. The integration file is named `test_retrieval_integration.py` for this reason.
-
-The suite has 93 tests at the end of Phase 5 (75 + 10 + 8).
-
----
-
-## 13.9 Measured on the Real Model
-
-**Observation:**
-Through the running API, with the real EmbeddingGemma model on the stored Technical Report (31 chunks):
+### E-3 · Retrieval on the Technical Report (31 chunks, real model, through the API)
 
 | Question | Top result | Similarity |
 |---|---|---|
-| How does Docling recognize the structure of tables? | Table Structure Recognition, pages 3-4 | 0.5499 |
-| Which OCR engine can be used for scanned pages? | OCR, page 4 | 0.5792 |
-| How many vacation days do employees get? (not answerable) | Performance table, page 5 | 0.0692 |
+| How does Docling recognize table structure? | Table Structure Recognition, pages 3-4 | 0.5499 (next hits 0.545, 0.531) |
+| Which OCR engine for scanned pages? | OCR, page 4 | 0.5792 (References chunk second, 0.43) |
+| Vacation days (not answerable) | Performance table, page 5 | 0.0692 |
 
-* All three numbers equal the Phase 4 throwaway check to four digits, so the service, the endpoint and the shared model reproduce what was measured by hand.
-* Table question: the top three scores were 0.550, 0.545 and 0.531. The second hit (Applications) mentions table structure recognition in passing and the third (Abstract) is general, so the gap between a good and a weak match can be small. Whether the ranking among the top chunks is good enough is a Phase 7 question.
-* OCR question: the References chunk ranked second (0.43). The bibliography noise seen in Phase 4 is confirmed.
-* Unanswerable question: three chunks were still returned, all below 0.07.
-* Still only three questions on one document: this is a smoke test, not evidence for a threshold.
-
----
-
-# 14. Core Decision Rule
-
-When considering a new technology, feature, or architectural change, ask:
-
-```text
-1. Does the product need it?
-2. Is there a simpler solution?
-3. Can we measure whether it helps?
-4. Does it improve the system meaningfully?
-5. Can we understand and maintain it?
-```
-
-If the answer is unclear, the default decision is to **keep the current solution and gather evidence first**.
-
----
-
-## Final Principle
-
-> Build the smallest coherent AI system that solves the problem, understand it deeply, evaluate it honestly, and add complexity only when the evidence justifies it.
+Identical to the Phase 4 hand check to four digits. Small gaps between the top hits do not mean a weak match; ranking quality is a Phase 7 measurement. Three questions on one document are a smoke test, not evidence for a threshold.

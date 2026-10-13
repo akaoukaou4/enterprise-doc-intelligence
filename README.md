@@ -1,15 +1,17 @@
 # Enterprise AI Document Intelligence Platform
 
-An AI-powered internal knowledge assistant. Employees ask natural-language questions about company documents and receive answers grounded in those documents, with citations to the source document and page.
+An internal knowledge assistant. Employees ask questions in natural language about company documents and get answers grounded in those documents, with citations to the source file, page and section. When the documents do not answer, the system says so instead of guessing.
 
-> **Status:** work in progress. Phase 5 (retrieval) is complete: a question can be embedded and matched against the stored chunks, and the closest chunks come back with their document, pages and headings. Phase 6 (Gemini + RAG) is next. See [ROADMAP.md](ROADMAP.md).
+> **Status:** work in progress. The current phase and the plan are in [ROADMAP.md](ROADMAP.md).
 
-## Planned workflow
+## How it works
 
 ```text
-Upload PDF → process → chunk → embed → store in PostgreSQL + pgvector
-Question → retrieve relevant chunks → Gemini → grounded answer + citations
+Upload PDF ─► Docling ─► HybridChunker ─► EmbeddingGemma ─► PostgreSQL + pgvector
+Question ─► retrieve closest chunks ─► Gemini ─► grounded answer + citations (or "not found")
 ```
+
+Citations are built by code from the stored chunks. The model only says which numbered sources it used, so it cannot invent a page number. Details: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Tech stack
 
@@ -17,50 +19,26 @@ Question → retrieve relevant chunks → Gemini → grounded answer + citations
 |---|---|
 | Language / API | Python 3.12, FastAPI, Pydantic |
 | Database | PostgreSQL + pgvector, SQLAlchemy, Alembic |
-| Object storage | MinIO (local), S3 (AWS), accessed through boto3 |
+| Object storage | MinIO locally, S3 on AWS (through boto3) |
 | Document processing | Docling, HybridChunker (CPU-only PyTorch) |
-| AI | EmbeddingGemma through sentence-transformers (embeddings), Gemini API (generation), RAG |
-| Orchestration | Apache Airflow |
-| UI | Streamlit |
-| Infrastructure | Docker, Docker Compose, AWS (EC2, RDS, S3), Terraform |
+| AI | EmbeddingGemma (embeddings, local), Gemini API (generation), RAG |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
+| Planned | Airflow, Streamlit, Docker image, AWS (EC2, RDS, S3), Terraform |
 
-Only Phases 0 to 5 are implemented so far. The rest of the stack arrives phase by phase.
-
-## Current state
-
-Implemented:
-
-* FastAPI app factory, typed configuration (`pydantic-settings`), centralized logging
-* unified JSON error handling
-* versioned API (`/api/v1`) with a route → service pattern
-* SQLAlchemy engine and session dependency, Alembic migrations (`documents` and `document_chunks` tables, pgvector extension)
-* storage service (boto3): MinIO locally, the same code targets Amazon S3 on AWS
-* `POST /api/v1/documents`: validates a PDF (content type, `%PDF-` bytes, size limit), stores it in MinIO, records it in PostgreSQL
-* `GET /api/v1/documents/{id}`: returns the document metadata
-* `/health` and `/health/db` endpoints
-* document processing pipeline (`app/pipeline/`): PDF → Docling → HybridChunker → cleaning → `Chunk(text, page_numbers, heading)`. Chunk size is measured with the EmbeddingGemma tokenizer (512 tokens). It drops the table of contents, removes license watermarks and invisible characters, and does not depend on FastAPI, Airflow or the database
-* `EmbeddingService`: EmbeddingGemma on CPU, 768-dimensional normalized vectors. Chunks are embedded as `title: <heading> | text: <chunk>`, questions with the model's query prompt
-* `ChunkService`: stores a document's chunks, page numbers, headings and vectors in `document_chunks`, replacing the old chunks in one transaction
-* `RetrievalService`: embeds a question and returns the top K closest chunks (pgvector cosine distance) as `RetrievedChunk(document_id, filename, page_numbers, heading, text, similarity)`, ready for citations
-* `POST /api/v1/search`: the retrieval inspection endpoint (`question`, `top_k` 1 to 20, default 5). The API holds one shared embedding model for all requests, loaded on the first search
-* `scripts/ingest_document.py`: runs the whole chain for an uploaded document (MinIO → pipeline → embeddings → PostgreSQL)
-* unit tests (fakes) and integration tests (real PostgreSQL and MinIO), Ruff, pre-commit hooks, and GitHub Actions CI
-
-Not connected yet: the upload endpoint does not start the ingestion (that arrives with Airflow in Phase 8), and there is no Gemini or question endpoint yet (Phase 6). `/search` returns chunks, not answers.
+Why each choice was made: [DECISIONS.md](DECISIONS.md).
 
 ## Getting started
 
-Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, and a free Hugging Face account (for EmbeddingGemma).
+Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, a free Hugging Face account (for EmbeddingGemma) and a Gemini API key (for `/ask`).
 
 ```powershell
-# 1. Install dependencies (this installs Docling and CPU-only PyTorch, several GB)
+# 1. Install dependencies (Docling and CPU-only PyTorch: several GB)
 uv sync
 
-# 2. Create your environment file and fill in the values
+# 2. Create your environment file and fill in the values (including GEMINI_API_KEY)
 copy .env.example .env
 
-# 3. Start PostgreSQL and MinIO (this also creates the "documents" bucket)
+# 3. Start PostgreSQL and MinIO (also creates the "documents" bucket)
 docker compose up -d
 
 # 4. Create the database tables (also enables the pgvector extension)
@@ -70,20 +48,15 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Once the server is running:
+Links once the server runs:
 
 * Interactive docs: http://127.0.0.1:8000/docs
-* Health: http://127.0.0.1:8000/health
-* Database health: http://127.0.0.1:8000/health/db
-* Info: http://127.0.0.1:8000/api/v1/info
+* Health: http://127.0.0.1:8000/health and http://127.0.0.1:8000/health/db
 * MinIO console: http://localhost:9001
 
-### Hugging Face access (needed for EmbeddingGemma)
+### Hugging Face access (EmbeddingGemma is gated)
 
-EmbeddingGemma is a gated model. Once per machine:
-
-1. Open https://huggingface.co/google/embeddinggemma-300m while logged in and accept the license.
-2. Log in from the project:
+Once per machine: open https://huggingface.co/google/embeddinggemma-300m while logged in and accept the license, then:
 
 ```powershell
 uv run hf auth login
@@ -92,67 +65,97 @@ uv run hf auth whoami
 
 The token is saved under `HF_HOME`, outside the repository. Never put it in `.env.example` or commit it.
 
+### Gemini API key
+
+1. Create a key in Google AI Studio: https://aistudio.google.com/apikey
+2. Put it in your local `.env` (never in `.env.example`, never in Git): `GEMINI_API_KEY=your-key-here`
+3. Optional: choose another model with `GEMINI_MODEL`.
+4. Check the connection (two real calls, using a fictional café as the document): `uv run python -m scripts.smoke_gemini`
+
+**Privacy:** on the free tier, Google may use prompts and responses to improve its products. Send only fictional, openly licensed or non-sensitive documents through `/ask`. Quotas and the current default model: [DECISIONS.md](DECISIONS.md) (D-28, D-36). Only `/ask` calls Gemini; upload, ingestion and `/search` do not.
+
 ### Where the caches go (recommended on Windows)
 
-Docling, PyTorch and EmbeddingGemma are large. By default uv and Hugging Face cache their downloads under your user folder on C:. To keep them on another drive, set these user environment variables once, then open a new terminal:
+uv and Hugging Face cache large downloads under your user folder on C: by default. To keep them elsewhere, set these once and open a new terminal:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", "D:\path\to\_caches\uv", "User")
 [Environment]::SetEnvironmentVariable("HF_HOME", "D:\path\to\_caches\huggingface", "User")
 ```
 
-### Try an upload
+## Usage
 
-Open the interactive docs, use `POST /api/v1/documents` ("Try it out"), and choose a PDF. Or from PowerShell:
+### 1. Upload a PDF
+
+In `/docs`, use `POST /api/v1/documents` ("Try it out"), or:
 
 ```powershell
 curl.exe -F "file=@C:\path\to\your.pdf;type=application/pdf" http://localhost:8000/api/v1/documents
 ```
 
-The response contains the document `id`; `GET /api/v1/documents/<id>` returns its metadata. Files that are not PDFs, are empty, or are larger than `MAX_UPLOAD_MB` (default 20) are rejected.
+The response contains the document `id`. `GET /api/v1/documents/<id>` returns its metadata. Files that are not PDFs, are empty, or exceed `MAX_UPLOAD_MB` (default 20) are rejected.
 
-### Ingest an uploaded document
+### 2. Ingest it
 
-This reads the PDF from MinIO, processes it, embeds the chunks and stores them in PostgreSQL. Running it again replaces the document's chunks.
+Upload does not start processing yet. Run the ingestion for the document (copy the `id`, do not type it):
 
 ```powershell
 uv run python -m scripts.ingest_document <document_id>
 ```
 
-On a CPU, a 9-page PDF takes about 3 to 4 minutes (about 10 s per page for Docling, plus about 1.6 s per chunk for embeddings). The first run also loads the models.
+It reads the PDF from MinIO, processes it, embeds the chunks and stores them. Running it again replaces the document's chunks. Nothing is sent to Gemini. On a CPU a short PDF takes a few minutes, and the first run also loads the models.
 
-### Try a search
+### 3. Ask a question
 
-A document must be ingested first (see above). With the API running, open http://127.0.0.1:8000/docs, expand `POST /api/v1/search`, click "Try it out" and send, for example:
+In `/docs`, expand `POST /api/v1/ask` and send:
+
+```json
+{"question": "How many vacation days do employees get per year?", "top_k": 5}
+```
+
+The response:
+
+* `answer`: the grounded answer, in the language of the question
+* `found`: `true` if the documents answer it, `false` if not
+* `citations`: the chunks the answer is based on, each with `filename`, `page_numbers`, `heading`, `document_id` and `text`. A `found: false` answer has no citations
+
+From PowerShell (the question is sent as UTF-8 so accents survive):
+
+```powershell
+function Ask($q) {
+  $body = @{ question = $q; top_k = 5 } | ConvertTo-Json
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+  $r = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/ask -ContentType "application/json; charset=utf-8" -Body $bytes
+  "found: $($r.found)"
+  "answer: $($r.answer)"
+  $r.citations | ForEach-Object { "  - $($_.filename) p.$($_.page_numbers -join ',') | $($_.heading)" }
+}
+
+Ask "How many vacation days do employees get per year?"
+```
+
+The first question after the server starts is slow because the embedding model loads. Windows PowerShell 5.1 can display non-ASCII characters incorrectly: check an accented answer in `/docs` before suspecting the code. If Gemini cannot be reached, is out of quota or returns something unusable, `/ask` returns `502` with the standard error shape; the reason is in the server log.
+
+### Inspect retrieval without Gemini
+
+`POST /api/v1/search` returns the retrieved chunks and their similarity, best first. Use it to tell whether a bad answer came from retrieval or from generation:
 
 ```json
 {"question": "Which OCR engine can be used for scanned pages?", "top_k": 3}
 ```
 
-Each result has the `filename`, `page_numbers`, `heading`, `text` and `similarity` of a chunk, best match first. The first search after the server starts takes about 20 seconds because the embedding model loads; later searches are fast. From PowerShell:
-
-```powershell
-$body = @{ question = "Which OCR engine can be used for scanned pages?"; top_k = 3 } | ConvertTo-Json
-(Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/search -ContentType "application/json" -Body $body).results | Select-Object filename, similarity, heading
-```
-
-An empty or too long question (over 1000 characters) and a `top_k` outside 1 to 20 are rejected with a `422` error.
+An empty or too long question (over 1000 characters) and a `top_k` outside 1 to 20 return `422` on both `/search` and `/ask`.
 
 ### Try the document pipeline only
 
-Put a PDF in `data/sample_docs/` (PDFs there are git-ignored), then run the pipeline without storing anything:
+Put a PDF in `data/sample_docs/` (git-ignored), then:
 
 ```powershell
 uv run python -m scripts.run_pipeline "data/sample_docs/your.pdf"
-```
-
-It prints the number of chunks, the pages covered, and the first chunks with their pages and headings.
-
-To look at what Docling itself produces for a PDF (pages, headings, tables, and the saved Markdown and JSON in `data/sample_docs/output/`):
-
-```powershell
 uv run python scripts/explore_docling.py "data/sample_docs/your.pdf"
 ```
+
+The first prints the chunks with their pages and headings, without storing anything. The second shows what Docling itself produces (output saved in `data/sample_docs/output/`).
 
 ## Development
 
@@ -162,31 +165,21 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers. Start them with `docker compose up -d` first. They skip themselves automatically when those services are not available, so `uv run pytest` also works without Docker running, but then the integration tests are skipped, not run. The pipeline, embedding, retrieval and search unit tests use fakes and need no Docling or EmbeddingGemma models.
-
-Test file names must be unique across the whole `tests/` folder (there are no `__init__.py` files, so two files with the same name make pytest stop at collection).
+Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers (`docker compose up -d` first) and skip themselves when those are not available. Test file names must be unique across `tests/` (no `__init__.py`, so a duplicate name stops pytest at collection).
 
 ## Known limitations
 
-Document processing (Phase 3):
+* Text and tables inside embedded images are unreliable; a table can lose its header row or split across chunks.
+* Some section headings are wrong or missing, so the page number is the most reliable part of a citation.
+* There is no similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation.
+* Citation precision (an answer citing more sources than it needs) is not measured yet.
+* No list or delete endpoint for documents, and upload does not trigger ingestion.
 
-* Text and tables inside embedded images are unreliable.
-* Docling reports every heading as level 1, and some headings are wrong or missing, so the page number is the most reliable part of a citation.
-* A table can lose its header row or be split across chunks.
-
-Retrieval (seen in Phases 4 and 5):
-
-* Dense vector search always returns the nearest chunks, even when the document cannot answer the question (an unrelated question still returns `top_k` chunks, with low similarity). Deciding when to answer "not found" is handled in Phases 6 and 7.
-* Bibliography chunks can be returned for questions that mention a cited tool.
-* Lower-ranked results can be only loosely related, and a small score gap between results does not mean a weak match.
-* The first search after the server starts takes about 20 seconds while the model loads.
-
-These are recorded in [DECISIONS.md](DECISIONS.md) and will be measured in the Phase 7 evaluation before any fix is attempted.
+How these will be measured and addressed: [ROADMAP.md](ROADMAP.md) (evaluation phase).
 
 ## Documentation
 
-* [PROJECT.md](PROJECT.md) - product definition and V1 scope
-* [ARCHITECTURE.md](ARCHITECTURE.md) - system architecture
-* [ENGINEERING_PRINCIPLES.md](ENGINEERING_PRINCIPLES.md) - engineering rules
-* [DECISIONS.md](DECISIONS.md) - technical decisions and their reasoning
-* [ROADMAP.md](ROADMAP.md) - development plan and progress
+* [PROJECT.md](PROJECT.md): product definition and V1 scope
+* [ARCHITECTURE.md](ARCHITECTURE.md): how the system works today
+* [DECISIONS.md](DECISIONS.md): why each choice was made
+* [ROADMAP.md](ROADMAP.md): plan and progress

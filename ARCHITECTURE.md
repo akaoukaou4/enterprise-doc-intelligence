@@ -1,1157 +1,281 @@
-# Architecture
+# ARCHITECTURE
 
-## 1. Architectural Style
+**Question this file answers:** how does the system work **today**?
+**Not here:** the plan (ROADMAP), the reasons behind choices (DECISIONS), how to run it (README), scope (PROJECT).
 
-The project uses a **modular monolith** architecture.
-
-The application is deployed as a small number of containers, while the Python application itself is organized into clear internal modules.
-
-The goal is to maintain:
-
-* clear separation of responsibilities
-* simple local development
-* independent testing
-* easy debugging
-* low operational complexity
-* portability to AWS
-
-The project does **not** use microservices.
-
-The architecture should remain simple until the application has a real reason to become more complex.
+Written in the present tense. If something is not built yet, it is listed once in section 13 and nowhere else. Status as of the end of Phase 6 (2026-10-13).
 
 ---
 
-## 2. High-Level Architecture
+## 1. Style and invariants
 
-```text
-                         USER
-                           │
-                           ▼
-                    Streamlit UI
-                           │
-                           ▼
-                     FastAPI API
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-          ▼                ▼                ▼
-       Document          RAG / AI        Application
-       Services          Services          Services
-          │                │
-          │                ├──────────────► Gemini API
-          │                │
-          │                └──────────────► EmbeddingGemma
-          │
-          ├──────────────► Object Storage
-          │                MinIO / S3
-          │
-          └──────────────► PostgreSQL
-                           + pgvector
-```
+The system is a **modular monolith**: one Python application, organized in layers, plus PostgreSQL and MinIO as containers. No microservices.
 
-The main application is responsible for coordinating these components.
+These **invariants** must hold in every change. A change that breaks one needs a new decision in DECISIONS first.
+
+| # | Invariant |
+|---|---|
+| I1 | `app/pipeline/` imports no FastAPI, Airflow, database or model-serving code. It runs from a script and from a test. |
+| I2 | Routes are thin: HTTP only. Logic lives in services. |
+| I3 | Only `StorageService` imports `boto3`. Only `LlmService` imports the Gemini SDK. |
+| I4 | One embedding model, one vector size (768), for documents and questions. The database column enforces the size. |
+| I5 | One `EmbeddingService` instance per API process. |
+| I6 | Provenance survives ingestion and retrieval: document id, file name, page numbers, heading, chunk index. |
+| I7 | **Citations are built by code from stored chunks.** The model returns only source numbers; it never writes pages, file names or ids. |
+| I8 | Model output is untrusted input. It is validated in code before use. |
+| I9 | Logs hold numbers, ids and timings. Never the question text, chunk text, or any secret. |
+| I10 | All configuration goes through one typed `Settings` object. Secrets are never in Git. |
+| I11 | Schema changes go through Alembic migrations. |
+| I12 | Automated tests never call Gemini. |
+| I13 | Only fictional or openly licensed documents are sent to Gemini (free tier may use the data). |
 
 ---
 
-## 3. Repository Architecture
-
-Target structure:
+## 2. System overview
 
 ```text
-enterprise-doc-intelligence/
-│
-├── app/
-│   ├── api/
-│   ├── core/
-│   ├── db/
-│   ├── services/
-│   ├── pipeline/
-│   └── schemas/
-│
-├── airflow/
-│   └── dags/
-│
-├── ui/
-│
-├── migrations/
-│
-├── tests/
-│   ├── unit/
-│   └── integration/
-│
-├── data/
-│   ├── sample_docs/
-│   └── eval/
-│
-├── scripts/
-│
-├── docker/
-│
-├── docs/
-│
-├── .env.example
-├── docker-compose.yml
-├── Makefile
-├── pyproject.toml
-├── PROJECT.md
-├── ROADMAP.md
-└── README.md
+                    USER (today: Swagger UI, curl, scripts)
+                              │
+                              ▼
+                          FastAPI
+        POST /documents   POST /search   POST /ask   GET /health...
+              │               │             │
+              ▼               ▼             ▼
+       DocumentService   RetrievalService  RagService
+              │               │             │  ├─ rag_prompt (numbered sources)
+              │               │             │  └─ LlmService ──► Gemini API
+              │               ▼             │
+              │         EmbeddingService ◄──┘   (EmbeddingGemma, CPU, in process)
+              │               │
+              ▼               ▼
+         StorageService   PostgreSQL + pgvector
+         boto3 → MinIO    documents, document_chunks
+                          (S3 on AWS)
+
+   Ingestion (run by hand today):
+   scripts/ingest_document.py <document_id>
+     MinIO ─► process_pdf (Docling) ─► EmbeddingService ─► ChunkService ─► document_chunks
 ```
 
-Each directory should have a clear responsibility.
+Docker Compose runs PostgreSQL (`pgvector/pgvector:pg18`, host port 5433) and MinIO (ports 9000 and 9001) plus a one-time `minio-init` container that creates the `documents` bucket. The API, the pipeline and the embedding model run on the host.
 
-New directories should only be introduced when a real requirement appears.
+---
 
-### Implemented so far (end of Phase 5)
+## 3. Repository layout
 
 ```text
 app/
-├── main.py            # create_app() application factory
+├── main.py              create_app() application factory
 ├── api/
-│   ├── deps.py        # shared FastAPI dependencies (DbSession, services, the shared
-│   │                  #   EmbeddingService, RetrievalService)
-│   ├── health.py      # /health, /health/db
-│   └── v1/
-│       ├── router.py  # /api/v1 router
-│       ├── info.py    # /api/v1/info (example route → service)
-│       ├── documents.py  # POST /documents, GET /documents/{id}
-│       └── search.py  # POST /search (retrieval inspection endpoint)
-├── core/
-│   ├── config.py      # typed settings (pydantic-settings)
-│   ├── logging.py     # centralized logging setup
-│   └── errors.py      # exceptions and error handlers
-├── db/
-│   ├── base.py        # SQLAlchemy declarative Base
-│   ├── models.py      # Document, DocumentChunk, EMBEDDING_DIMENSIONS
-│   └── session.py     # SQLAlchemy engine, session factory, get_db
-├── services/
-│   ├── info.py        # example application service
-│   ├── storage.py     # StorageService (boto3 → MinIO / S3)
-│   ├── documents.py   # DocumentService (validate, store file, insert row)
-│   ├── embeddings.py  # EmbeddingService (EmbeddingGemma: documents and queries)
-│   ├── chunks.py      # ChunkService (store chunks + vectors in document_chunks)
-│   └── retrieval.py   # RetrievalService, RetrievedChunk (embed question → pgvector search)
-├── pipeline/          # document processing, independent of FastAPI, Airflow and the database
-│   ├── models.py      # Chunk (text, page_numbers, heading)
-│   ├── extract.py     # PDF → Docling document
-│   ├── chunk.py       # Docling document → Chunk list (EmbeddingGemma tokenizer,
-│   │                  #   table of contents dropped)
-│   ├── clean.py       # cleaning rules (pure functions)
-│   └── process.py     # process_pdf(): extract → chunk → clean
-└── schemas/
-    ├── health.py
-    ├── errors.py
-    ├── info.py
-    ├── documents.py   # DocumentResponse
-    └── search.py      # SearchRequest, SearchHit, SearchResponse
-
-migrations/
-├── env.py             # Alembic setup (URL comes from Settings)
-├── script.py.mako
-└── versions/          # migrations (excluded from Ruff)
-    ├── b475fddcd445_create_documents_table.py
-    └── 3f9a7c2d1e84_add_pgvector_and_document_chunks.py
-
-alembic.ini
-
-scripts/
-├── storage_roundtrip.py   # manual upload/download/delete check against MinIO
-├── explore_docling.py     # convert one PDF with Docling and print what it produced
-├── run_pipeline.py        # run the real process_pdf() on one PDF end to end (no storing)
-└── ingest_document.py     # MinIO → pipeline → embeddings → PostgreSQL for one document
-
-tests/
-├── unit/              # fakes, run everywhere including CI
-└── integration/       # real PostgreSQL + MinIO, skipped when unavailable
+│   ├── deps.py          shared dependencies: DbSession, services, the shared EmbeddingService
+│   ├── health.py        /health, /health/db
+│   └── v1/              router.py, info.py, documents.py, search.py, ask.py
+├── core/                config.py (Settings), logging.py, errors.py
+├── db/                  base.py, models.py (Document, DocumentChunk), session.py
+├── services/            documents, storage, embeddings, chunks, retrieval, llm, rag_prompt, rag, info
+├── pipeline/            models.py (Chunk), extract.py, chunk.py, clean.py, process.py
+└── schemas/             health, errors, info, documents, search, ask
+migrations/              Alembic (env.py reads the URL from Settings); versions/ excluded from Ruff
+scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, smoke_gemini
+tests/unit/              fakes; run everywhere including CI
+tests/integration/       real PostgreSQL and MinIO; skip themselves when unavailable
+data/eval/               evaluation sets (Phase 7); data/sample_docs/output/ is git-ignored
+ui/                      reserved for the Streamlit UI (Phase 9)
 ```
 
-Scripts that import from `app` are run as modules from the project root, for example `uv run python -m scripts.run_pipeline`.
-
-Test file names must be unique across all of `tests/` (there are no `__init__.py` files, so pytest identifies a test module by its file name). For example, the retrieval tests are `tests/unit/test_retrieval_service.py` and `tests/integration/test_retrieval_integration.py`.
-
-The upload endpoint does not call the pipeline yet. Today a document is ingested by running `scripts.ingest_document` (direct execution mode). Connecting upload to processing, and the status transitions, come with Airflow in Phase 8.
+Scripts that import `app` run as modules from the project root: `uv run python -m scripts.run_pipeline`.
+Test file names must be unique across `tests/` (no `__init__.py`, so pytest identifies a module by file name).
 
 ---
 
-# 4. Application Layers
+## 4. API layer
 
-The application is organized into several logical layers.
+Routes parse HTTP, call a service and format the response (I2). Business endpoints live under `/api/v1`; operational endpoints stay at the root so infrastructure checks do not change with API versions.
 
-```text
-API
- │
- ▼
-Application Services
- │
- ├── Document Services
- ├── Retrieval Services
- ├── RAG Services
- └── Storage / AI Integrations
- │
- ▼
-Infrastructure
- │
- ├── PostgreSQL
- ├── pgvector
- ├── MinIO / S3
- ├── Gemini API
- └── EmbeddingGemma
-```
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | liveness: the process is up |
+| `GET /health/db` | readiness: the database is reachable |
+| `GET /api/v1/info` | example route → service |
+| `POST /api/v1/documents` | upload a PDF: store the file, insert the row, return metadata (201) |
+| `GET /api/v1/documents/{id}` | metadata of one document |
+| `POST /api/v1/search` | the most similar chunks for a question (inspection endpoint) |
+| `POST /api/v1/ask` | grounded answer with citations |
 
-The exact implementation can evolve, but responsibilities should remain separated.
+There is no list or delete endpoint for documents, and upload does not start ingestion.
+
+**Dependencies.** `app/api/deps.py` builds services for routes. Most are built per request; the `EmbeddingService` is one shared instance (I5, `lru_cache`).
+
+**Errors.** Every error has one shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`); registered handlers convert them. FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server.
+
+**Search and ask routes** are plain `def`, so FastAPI runs the blocking model and network work in a thread pool. Request: `{question, top_k}`; the question is stripped and must be 1 to 1000 characters; `top_k` is 1 to 20 (default 5). Invalid input returns `422`. The schemas import the limits from the retrieval service, so they are defined once.
 
 ---
 
-## 5. API Layer
+## 5. Data model
 
-Location:
+**Object storage.** Original PDFs live in a bucket under `documents/<document_id>/<filename>`. The UUID prevents collisions. The database never holds the PDF bytes.
 
-```text
-app/api/
-```
-
-The API layer contains FastAPI routes.
-
-Example responsibilities:
+**PostgreSQL + pgvector.** Alembic head: `3f9a7c2d1e84` (history: `b475fddcd445` creates `documents`, then `3f9a7c2d1e84` adds the `vector` extension and `document_chunks`).
 
 ```text
-POST /documents
-GET  /documents/{id}
-POST /ask
-GET  /health
+documents
+  id UUID PK (generated in Python) · filename · storage_key (unique, internal, never returned by the API)
+  content_type · size_bytes · status (plain string; stays "uploaded" today) · created_at
+
+document_chunks
+  id UUID PK · document_id FK → documents.id ON DELETE CASCADE · chunk_index
+  text · page_numbers integer[] · heading (nullable) · embedding vector(768) NOT NULL · created_at
+  UNIQUE (document_id, chunk_index)
 ```
 
-The API layer should primarily handle:
+- Cascade delete leaves no orphan chunks. The unique constraint prevents duplicates when a document is processed twice.
+- `vector(768)` and `NOT NULL` make the database reject missing or wrong-sized vectors.
+- There is no vector index (HNSW or IVFFlat). An exact scan is instant at this size.
+- The SQLAlchemy engine is created lazily with `pool_pre_ping`, so the app starts without a database and recovers after a database restart. `DATABASE_URL` is optional in Settings so tests and CI run without one.
 
-* HTTP requests
-* request validation
-* authentication later if required
-* calling application services
-* formatting responses
-* HTTP-level errors
+---
 
-Business logic should not be placed directly inside route functions.
+## 6. Request flows
 
-For example:
-
-```text
-Bad:
-
-FastAPI route
- ├── parse PDF
- ├── chunk document
- ├── generate embeddings
- ├── write database
- └── call Gemini
-```
-
-Instead:
-
-```text
-FastAPI route
-      │
-      ▼
-Application service
-      │
-      ▼
-Pipeline / AI / database services
-```
-
-This keeps the system easier to test and maintain.
-
-### Current endpoints
-
-```text
-GET  /health                   liveness: the process is up
-GET  /health/db                readiness: the database is reachable
-GET  /api/v1/info              example route → service (app name, version, environment)
-POST /api/v1/documents         upload a PDF: store the file, insert the row, return metadata (201)
-GET  /api/v1/documents/{id}    read the metadata of one document
-POST /api/v1/search            retrieve the most similar chunks for a question (inspection endpoint)
-```
-
-The search endpoint reaches the embedding service (through `RetrievalService`). No endpoint calls the pipeline or the chunk service yet. There is no question endpoint (`/ask`) yet; it arrives with RAG (Phase 6), next to `/search`, which stays.
-
-### Document endpoints
+### 6.1 Upload
 
 ```text
 POST /api/v1/documents (multipart file)
-        │
-        ▼
-Route: read the bytes, call the service
-        │
-        ▼
-DocumentService.create
-   ├── validate: application/pdf, %PDF- bytes, not empty, within MAX_UPLOAD_MB
-   ├── StorageService.upload   → MinIO / S3
-   └── insert Document row     → PostgreSQL
-        (if the insert fails: roll back and delete the stored file)
+  route: read bytes ─► DocumentService.create
+    validate: application/pdf, %PDF- magic bytes, not empty, within MAX_UPLOAD_MB (20 MB)
+    StorageService.upload ─► MinIO / S3
+    insert documents row ─► PostgreSQL        (if the insert fails: roll back and delete the stored file)
+  response: DocumentResponse (id, filename, content_type, size_bytes, status, created_at)
 ```
 
-The response is `DocumentResponse` (`id`, `filename`, `content_type`, `size_bytes`, `status`, `created_at`). `storage_key` is internal and is not returned.
+### 6.2 Ingestion (direct mode, by hand)
 
-### Search endpoint
+`uv run python -m scripts.ingest_document <document_id>` chains: download from storage ─► `process_pdf` ─► `EmbeddingService.embed_documents` ─► `ChunkService.replace_chunks`. Airflow will call the same functions (Phase 8). It does not change `documents.status`.
+
+### 6.3 Search
 
 ```text
-POST /api/v1/search  {"question": "...", "top_k": 5}
-        │
-        ▼
-SearchRequest (Pydantic): strip whitespace, question 1-1000 characters, top_k 1-20
-        │   (invalid input → 422 validation_failed, the service is never called)
-        ▼
-Route (plain def): call RetrievalService.search, convert each hit to SearchHit
-        │
-        ▼
-SearchResponse {"results": [ {document_id, filename, page_numbers, heading, text, similarity}, ... ]}
+SearchRequest (validated) ─► RetrievalService.search(question, top_k)
+  EmbeddingService.embed_query ─► query vector
+  SELECT document_chunks.*, documents.filename, cosine_distance(embedding, q) AS distance
+  FROM document_chunks JOIN documents ... ORDER BY distance, document_id, chunk_index LIMIT top_k
+  ─► list[RetrievedChunk]   similarity = 1 - distance
 ```
 
-It is an inspection endpoint: it shows what retrieval returns, so a bad answer can later be traced to retrieval or to generation. The route is a plain `def`, so FastAPI runs the blocking embedding work in a thread pool and the server stays responsive. An empty database returns an empty list, not an error.
+`RetrievedChunk` is a frozen dataclass: `document_id, filename, page_numbers, heading, text, similarity`. It carries everything a citation needs, so no second lookup is needed, and callers never see ORM rows or raw vectors. Ties are broken by `document_id` and `chunk_index`, so the order is stable. Dense search always returns the nearest chunks, even when the documents cannot answer; the service returns every similarity so a "not found" rule never needs a changed shape.
 
-### Conventions
-
-* **Versioning:** business endpoints live under `/api/v1`. Operational endpoints (`/health`, `/health/db`) stay at the root so infrastructure checks do not change with API versions.
-* **Dependency injection:** services and database sessions are provided to routes through FastAPI dependencies defined in `app/api/deps.py`. Routes receive a ready-to-use service and call it. Most services are built per request; the `EmbeddingService` is the exception: one instance is shared by the whole process (see section 9).
-* **Errors:** every error response has one shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`) and the registered handlers convert them to HTTP responses. FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server, so internals are never leaked to clients.
-
----
-
-# 6. Document Processing Architecture
-
-The document pipeline is responsible for converting a PDF into searchable knowledge.
+### 6.4 Ask
 
 ```text
-                         PDF
-                          │
-                          ▼
-                       Docling
-                          │
-                          ▼
-              Structured document data
-                          │
-                          ▼
-                    HybridChunker
-                          │
-                          ▼
-                  Document chunks
-                          │
-                          ▼
-                  EmbeddingGemma
-                          │
-                          ▼
-                   Vector embeddings
-                          │
-                          ▼
-                  PostgreSQL + pgvector
-```
-
-The pipeline should preserve useful document provenance.
-
-### Implemented
-
-The chunks themselves are produced in `app/pipeline/` (Phase 3). Embedding and storing are application services (Phase 4), so the pipeline package stays free of the model, the database and the web framework:
-
-```text
-PDF file
-   │
-   ▼
-extract_document        pipeline/extract.py   Docling converter (created once, cached)
-   │
-   ▼
-chunk_document          pipeline/chunk.py     HybridChunker with the EmbeddingGemma
-   │                                          tokenizer (512 tokens); drops table-of-
-   │                                          contents chunks (label "document_index");
-   │                                          keeps page numbers and the nearest heading
-   ▼
-clean_chunks            pipeline/clean.py     removes \x08 and \ufeff, removes the license
-   │                                          watermark line, drops chunks left empty
-   ▼
-list[Chunk]             pipeline/models.py    Chunk(text, page_numbers, heading)
-   │
-   ▼
-EmbeddingService        services/embeddings.py   "title: <heading> | text: <chunk>"
-   │                                             → 768-dimensional vectors
-   ▼
-ChunkService            services/chunks.py       replace the document's rows in
-                                                 document_chunks (one transaction)
-```
-
-`process_pdf(path)` in `process.py` runs the first three stages in order. It does no storage or database work and imports no FastAPI or Airflow code. `scripts/ingest_document.py` chains the whole path for one uploaded document (download from storage, `process_pdf`, `embed_documents`, `replace_chunks`); Airflow tasks will call the same functions.
-
-The stages are small and separate so each can be tested alone. `clean.py` is pure (text in, text out). `chunk_document` accepts a chunker as an argument, so tests use fake chunks without loading any model. `EmbeddingService` accepts a model, and `ChunkService` takes a database session, so each is tested with fakes or a real database without the other.
-
-### What the chunk contains
-
-```text
-Chunk (pipeline, in memory)
-├── text            the chunk text
-├── page_numbers    list of pages (a chunk can span pages, e.g. [2, 3])
-└── heading         nearest section heading, or None
-```
-
-When stored, the row in `document_chunks` adds `document_id`, `chunk_index`, `embedding`, and timestamps (see section 8). The schema comes from what Docling actually provides; see DECISIONS.md section 11.
-
-### Known behavior and limits
-
-* Page headers and footers are in Docling's `FURNITURE` layer and are skipped by the chunker.
-* Text inside pictures is almost never part of the chunks.
-* Tables become chunks of `row, column = value` text; a table can be split across chunks, and its header row can be lost.
-* Every heading is reported at level 1, so only the nearest heading is kept, and some headings are wrong or missing.
-* Speed on CPU is about 10 s per page for conversion, plus about 1.6 s per chunk for embeddings. A 9-page PDF takes about 3.5 minutes end to end.
-* With the EmbeddingGemma tokenizer the 512-token budget produces larger chunks than the Phase 3 tokenizer: 31 chunks (was 49) for the Technical Report and 58 (was 72) for ISO 27001.
-
-Details and reasoning are in DECISIONS.md sections 11 and 12.
-
----
-
-# 7. Document Storage
-
-Original documents are stored separately from their processed representations.
-
-```text
-Original PDF
-     │
-     ▼
-Object Storage
-     │
-     ├── Local → MinIO
-     │
-     └── AWS   → S3
-```
-
-Files are stored under the key:
-
-```text
-documents/<document_id>/<original filename>
-```
-
-The UUID in the key prevents collisions between files with the same name. The bucket itself (`documents`) is created by the `minio-init` container in Docker Compose, not by the application.
-
-PostgreSQL stores metadata about the document, in the `documents` table:
-
-```text
-Document
-├── id              UUID, primary key, generated in Python
-├── filename        original file name (last path component)
-├── storage_key     unique key of the file in object storage
-├── content_type    application/pdf
-├── size_bytes      file size
-├── status          uploaded → processing → processed | failed
-└── created_at      set by the database
-```
-
-`status` is a plain string, not a PostgreSQL ENUM; the application enforces the allowed values. Nothing sets `processing`, `processed` or `failed` yet; that comes with orchestration in Phase 8.
-
-The database should not be used to store the original PDF binary unless there is a concrete reason to do so.
-
----
-
-# 8. Database Architecture
-
-The primary database is:
-
-**PostgreSQL + pgvector**
-
-PostgreSQL stores both application data and vector embeddings.
-
-```text
-PostgreSQL
-│
-├── documents
-│
-├── document_chunks
-│     ├── id             UUID, primary key
-│     ├── document_id    foreign key → documents.id, ON DELETE CASCADE
-│     ├── chunk_index    order of the chunk in the document
-│     ├── text           the chunk text
-│     ├── page_numbers   integer[] (a chunk can span pages)
-│     ├── heading        nearest section heading, nullable
-│     ├── embedding      vector(768), NOT NULL
-│     └── created_at
-│
-│     UNIQUE (document_id, chunk_index)
-│
-└── alembic_version
-```
-
-Both tables exist (Phase 4). The `vector` extension (version 0.8.7 locally) is created by the migration `3f9a7c2d1e84`. Phase 5 added no migration: retrieval only reads these tables.
-
-Design points:
-
-* Deleting a document deletes its chunks (cascade), so no orphan chunks exist.
-* The unique constraint prevents duplicate chunks when a document is processed twice; its index also serves "all chunks of a document".
-* `vector(768)` and `NOT NULL` make the database reject missing or wrong-sized vectors.
-* There is no vector index (HNSW or IVFFlat). With tens of chunks per document an exact scan is instant; an index is added only if search time becomes measurable.
-
-pgvector provides vector similarity search. Retrieval uses cosine distance (`cosine_distance` in SQLAlchemy through the `pgvector` package); the vectors are normalized, so similarity is `1 - distance`.
-
-The initial retrieval strategy uses dense vector similarity.
-
-The system should avoid introducing a separate vector database unless PostgreSQL/pgvector becomes insufficient for a demonstrated requirement.
-
-### Connection handling
-
-The SQLAlchemy engine is created lazily in `app/db/session.py` with `pool_pre_ping` enabled, so the app starts without a database and recovers by itself after the database restarts. Routes get one session per request through the `get_db` dependency, and the session is always closed afterwards. `DATABASE_URL` is optional in the settings so tests and CI can run without a database.
-
-### Schema changes
-
-Schema changes are versioned Alembic migrations:
-
-```text
-SQLAlchemy models (app/db/models.py)
-        │
-        ▼
-alembic revision --autogenerate   → migration script (read before applying)
-        │                            (written by hand when autogenerate cannot
-        │                             express it, e.g. CREATE EXTENSION)
-        ▼
-alembic upgrade head              → PostgreSQL
-```
-
-Models inherit from `Base` (`app/db/base.py`), which Alembic reads to know what the tables should look like. `migrations/env.py` takes the database URL from `Settings`, so `alembic.ini` holds no real credentials. The same migration history will run against RDS on AWS.
-
-Current history:
-
-```text
-b475fddcd445  create documents table
-      ↓
-3f9a7c2d1e84  add pgvector extension and document_chunks table   (head)
+POST /api/v1/ask {question, top_k}
+  RetrievalService.search
+    no chunks ─► fixed "no documents" answer, Gemini is not called
+  rag_prompt: system instruction + numbered <source number="n"> blocks (file and section, not pages) + <question>
+  LlmService.generate_structured ─► Gemini ─► RagReply {found, answer, source_numbers}
+  RagService validates:
+    keep only source numbers that match a retrieved chunk (made-up numbers are dropped)
+    found=false                         ─► fixed "not found" answer, no citations
+    found=true, no valid citation or a blank answer ─► fixed "not found" answer
+    otherwise                           ─► answer + citations built from the stored chunks (I7)
+  response: {answer, found, citations[{document_id, filename, page_numbers, heading, text}]}
+  log line: chunk count, similarities, found, cited and dropped source numbers   (numbers only, I9)
 ```
 
 ---
 
-# 9. Embedding Architecture
-
-Embedding generation is handled through a dedicated embedding service (`app/services/embeddings.py`).
+## 7. Document processing pipeline (`app/pipeline/`)
 
 ```text
-Document chunk
-      │
-      ▼
-"title: <heading or none> | text: <chunk text>"
-      │
-      ▼
-EmbeddingGemma
-      │
-      ▼
-768-dimensional vector (length 1)
-      │
-      ▼
-PostgreSQL + pgvector
+PDF ─► extract (Docling, converter created once and cached)
+    ─► chunk (HybridChunker with the EmbeddingGemma tokenizer, 512 tokens; table-of-contents
+              chunks dropped by Docling's "document_index" label; keeps pages and nearest heading)
+    ─► clean (remove \x08 and \ufeff; remove the license watermark line; drop chunks left empty)
+    ─► list[Chunk(text, page_numbers, heading)]
 ```
 
-The same embedding model must be used consistently for:
+`process_pdf(path)` runs these three stages. It does no storage or database work (I1). `clean.py` is pure. `chunk_document` accepts a chunker, so tests use fake chunks without any model. Each cleaning rule exists because real PDFs contained that junk.
 
-* document chunks
-* user queries
+**Known limits** (documented, not fixed; Phase 7 decides whether they matter):
+- Text and tables inside pictures are unreliable.
+- Docling reports every heading as level 1, so only the nearest heading is kept; some headings are wrong or missing.
+- A table can lose its header row and can be split across chunks without its caption.
+- Front-matter chunks (title blocks, author lists) can carry a wrong heading.
+- Some chunks are only a heading plus a line or two of text and can take a result slot.
+- Reference lists (bibliographies) can rank in results as noise.
 
-Conceptually:
-
-```text
-Document
-   ↓
-EmbeddingGemma  (document format)
-   ↓
-Vector A
-
-
-Question
-   ↓
-EmbeddingGemma  (query prompt: "task: search result | query: ...")
-   ↓
-Vector B
-```
-
-The vectors can then be compared through pgvector similarity search.
-
-### How the service works
-
-* `embed_documents(chunks)` returns one vector per chunk, in the same order. The text it embeds is built by `build_document_text` from our own `Chunk`, so the real heading fills the model's title slot. Without a heading the result equals the model's own document prompt.
-* `embed_query(question)` uses the model's query encoder, so questions and documents follow the formats the model was trained on.
-* The model loads on first use, on CPU, through `sentence-transformers`. Importing the module stays fast, and unit tests use a fake model.
-* When the model loads, the service checks that its output size equals the database column size (768) and raises a clear error otherwise.
-
-### One shared instance in the API
-
-The model takes seconds to load and uses memory, so the API creates one `EmbeddingService` for the whole process, never one per request. In `app/api/deps.py`, `get_embedding_service` is decorated with `lru_cache`, and `RetrievalService` receives that instance through `EmbeddingServiceDep`. The model still loads lazily, so the first search pays the loading cost.
-
-```text
-first POST /api/v1/search  →  model loads (about 22 s measured, mostly update checks to Hugging Face)
-later searches             →  same instance, model already in memory
-```
-
-Two simultaneous first requests could both load the model, because there is no lock; for one developer this only wastes time, and it is recorded in DECISIONS.md 13.3. Whether to preload the model at startup is revisited in Phase 11, when container health checks are designed.
-
-### Configuration
-
-The model is one setting, `EMBEDDING_MODEL_ID` (default `google/embeddinggemma-300m`). The chunker's tokenizer and the embedding service both read it, so chunk size is always measured by the model that embeds the chunk. Changing to a model with another vector size needs a new migration.
-
-### Access
-
-EmbeddingGemma is a gated Hugging Face model: accept the license and log in once (`uv run hf auth login`). The token is stored under `HF_HOME` (on D:), outside the repository. Deployments will need it as a secret (`HF_TOKEN`) or pre-downloaded models in a volume.
-
-### Storing
-
-`ChunkService.replace_chunks(document_id, chunks, vectors)` validates that the chunk and vector counts match and that every vector has 768 values, then deletes the document's old chunks and inserts the new ones in one transaction. A failure rolls back and leaves the old chunks in place.
-
-Phase 4 measurements: about 1.6 s per chunk on the development CPU; vectors have norm 1.0000.
+**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes.
 
 ---
 
-# 10. Retrieval Architecture
+## 8. Embeddings (`app/services/embeddings.py`)
 
-The initial retrieval system is intentionally simple.
+- Model: EmbeddingGemma (`google/embeddinggemma-300m`), set by `EMBEDDING_MODEL_ID`. The chunker tokenizer and the embedding service both read it, so chunk size is measured by the model that embeds the chunk. A model with another vector size needs a new migration.
+- `embed_documents(chunks)` embeds `title: <heading or none> | text: <chunk text>` and returns one normalized 768-dimensional vector per chunk, in order.
+- `embed_query(question)` uses the model's query prompt, so questions and documents follow the formats the model was trained on.
+- The model loads lazily on first use (about 22 s the first time, mostly update checks to huggingface.co), on CPU, through `sentence-transformers`. A dimension check at load time rejects a model that does not produce 768 values.
+- No loading lock: two simultaneous first requests could both load the model. Harmless for one developer.
+- The model is gated: accept the license and run `uv run hf auth login` once. The token is stored under `HF_HOME`, outside the repository.
 
-```text
-User question
-      │
-      ▼
-EmbeddingGemma
-      │
-      ▼
-Query vector
-      │
-      ▼
-pgvector similarity search
-      │
-      ▼
-Top-K chunks
-      │
-      ▼
-Context builder
-```
-
-The retrieved chunks should retain their metadata so that the system can later construct accurate citations.
-
-Initial retrieval is dense semantic retrieval.
-
-More advanced approaches such as:
-
-* hybrid retrieval
-* BM25
-* reranking
-* query expansion
-
-should only be added when evaluation demonstrates a need for them.
-
-### Implemented (Phase 5)
-
-`RetrievalService` (`app/services/retrieval.py`) takes a database session and an embedding service, and exposes `search(question, top_k)`:
-
-```text
-search(question, top_k)
-   │
-   ├── strip the question; reject empty, longer than 1000 characters, or top_k outside 1-20 (ValueError)
-   │
-   ├── EmbeddingService.embed_query(question)          → query vector (768, normalized)
-   │
-   ├── SQL:  SELECT document_chunks.*, documents.filename,
-   │                cosine_distance(embedding, query_vector) AS distance
-   │         FROM document_chunks JOIN documents ON documents.id = document_chunks.document_id
-   │         ORDER BY distance, document_id, chunk_index        (stable order on ties)
-   │         LIMIT top_k
-   │
-   └── list[RetrievedChunk]    similarity = 1 - distance
-```
-
-`RetrievedChunk` is a frozen dataclass:
-
-```text
-RetrievedChunk
-├── document_id
-├── filename          (joined from documents, so no second lookup)
-├── page_numbers
-├── heading           (may be None)
-├── text
-└── similarity
-```
-
-It is a plain object, not a database row: callers never see the ORM model or the raw vector. The limits (`DEFAULT_TOP_K = 5`, `MAX_TOP_K = 20`, `MAX_QUESTION_CHARS = 1000`) are constants in the service, and the API schemas import them, so they are defined once. The API checks them first and returns a 422; the service checks again and raises `ValueError`, which is not mapped to an HTTP error because the API cannot let a bad value through. The numbers are guesses and are Phase 7 experiments.
-
-Phase 5 measurement through the API, with the real model on the Technical Report: tables 0.5499, OCR 0.5792, unanswerable question 0.0692, identical to the Phase 4 hand check.
-
-Dense search always returns the nearest chunks, even when the document cannot answer the question (see DECISIONS.md 12.11). The service therefore returns the similarity of every hit, so a "not found" rule can be applied later without changing its shape. Deciding when to answer "not found" is not solved by retrieval alone; it is decided in Phases 6 and 7 with evaluation data. Not added on purpose: a similarity threshold, a document filter, a vector index, hybrid search, reranking, query expansion.
+`ChunkService.replace_chunks(document_id, chunks, vectors)` validates that counts match and every vector has 768 values, then deletes the document's old chunks and inserts the new ones in one transaction. A failure rolls back and keeps the old chunks.
 
 ---
 
-# 11. RAG Architecture
+## 9. LLM and RAG (Phase 6)
 
-The RAG service combines retrieval and generation.
+**`LlmService` (`app/services/llm.py`)** is the only module that imports the Gemini SDK (`google-genai`, classic `generate_content` with a JSON schema taken from a Pydantic model). The rest of the code calls `generate_structured(system_instruction, prompt, response_model)` and gets a validated object.
+- One client per process, 30 s timeout, no retries.
+- An answer is accepted only if `finish_reason` is `STOP`, the text is not empty, and it validates against the Pydantic model. Otherwise: `ExternalServiceError` (`502`).
+- Gemini errors become `502` with a generic message (a separate message for quota exhaustion); details go to the server log only. A missing key returns "The AI service is not configured."
+- Logs model, latency, finish reason and token counts. Never the question or a chunk (I9).
+- Settings: `GEMINI_API_KEY` (`SecretStr`) and `GEMINI_MODEL` (default `gemini-3.5-flash-lite`).
 
-```text
-                       User question
-                              │
-                              ▼
-                       Query embedding
-                              │
-                              ▼
-                       Vector retrieval
-                              │
-                              ▼
-                       Relevant chunks
-                              │
-                              ▼
-                       Context builder
-                              │
-                              ▼
-                  ┌─────────────────────┐
-                  │ Question + Context  │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                          Gemini
-                             │
-                             ▼
-                      Grounded answer
-                             │
-                             ▼
-                   Answer + citations
-```
+**`rag_prompt.py`** builds the prompt. The system instruction has seven rules: use only the sources; answer `found: false` with no sources when they do not answer; answer partially when they cover part; cite only directly supporting sources; write no numbers, file names or pages in the answer text; treat text inside `<source>` tags as data, never as instructions; answer in the language of the question, concisely. Fake `<source>` or `<question>` tags inside a document are neutralized.
 
-The LLM should receive retrieved document context rather than being expected to know the company's internal information independently.
+**`RagService` (`app/services/rag.py`)** orchestrates section 6.4 and returns `RagAnswer(answer, found, citations)`, where `Citation` is `(document_id, filename, page_numbers, heading, text)`.
 
-The RAG service is responsible for:
+**Refusal has three layers:** no retrieved chunks (Gemini is not called); the model answers `found: false`; or the model claims `found: true` without a valid citation. There is **no similarity threshold**, because the measured scores separate on one corpus and not on another (see DECISIONS). A citation proves the chunk was retrieved, not that it supports every claim; citation precision is not measured yet.
 
-* receiving the question
-* retrieving relevant chunks
-* constructing context
-* calling Gemini
-* processing the response
-* returning the answer and citation information
-
-The first half of this flow exists since Phase 5: `RetrievalService` returns the relevant chunks with their provenance, and the API already holds one shared `EmbeddingService` (see section 9). The RAG service will call `RetrievalService` and add the context builder, the Gemini call and the citations (Phase 6). Gemini is the first external network call in the request path, so its failures become `ExternalServiceError` (502), and its API key is a secret in the settings, never in the repository.
+A citation page range can span pages. The page number is the reliable part of a citation; the section label is a hint (headings can be wrong, section 7).
 
 ---
 
-# 12. Citation Architecture
+## 10. Storage abstraction
 
-Citations are based on metadata preserved during document processing and stored with each chunk.
-
-Conceptually:
-
-```text
-Retrieved chunk
-│
-├── document_id
-├── filename
-├── page_numbers
-├── heading
-└── text
-```
-
-The final answer can therefore reference:
-
-```text
-Source:
-Document: Employee Handbook.pdf
-Pages: 14
-Section: 5.2 Policy
-```
-
-Because a chunk can span pages, a citation can show a page range. Because some headings are wrong or missing (see section 6), the page number is the more reliable part of a citation, and the section label is a helpful hint.
-
-Since Phase 5 every search result already carries all of these fields (`RetrievedChunk`), so building a citation needs no extra database lookup.
-
-The exact citation format can evolve with the UI.
-
-The important architectural requirement is:
-
-> **Retrieval must preserve enough provenance information to identify where the answer came from.**
+`StorageService` has `upload`, `download`, `delete`. It is the only code that imports `boto3` (I3). `boto3` failures become `NotFoundError` (missing key) or `ExternalServiceError`, so routes never see them. Switching between MinIO and S3 is configuration: with `MINIO_ENDPOINT` set (local), boto3 talks to MinIO; without it (AWS), boto3 talks to real S3 with the instance's IAM role.
 
 ---
 
-# 13. Airflow Architecture
+## 11. Configuration and secrets
 
-Airflow is an orchestration layer, not the document-processing implementation.
+One typed `Settings` object (`app/core/config.py`) reads environment variables and `.env`. Settings are added only when a phase needs them.
 
-```text
-                         Airflow
-                            │
-                            ▼
-                     Document DAG
-                            │
-             ┌──────────────┼──────────────┐
-             ▼              ▼              ▼
-          Extract         Clean          Chunk
-             │              │              │
-             └──────────────┼──────────────┘
-                            ▼
-                         Embed
-                            │
-                            ▼
-                          Store
-```
+| Group | Settings |
+|---|---|
+| Application | `APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL` |
+| Database | `DATABASE_URL` (optional so CI runs without it) |
+| Object storage | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET` |
+| Uploads | `MAX_UPLOAD_MB` |
+| Embeddings | `EMBEDDING_MODEL_ID` (has a default) |
+| LLM | `GEMINI_API_KEY` (secret), `GEMINI_MODEL` (has a default) |
 
-The actual processing functions live in:
-
-```text
-app/pipeline/        extract, chunk, clean
-app/services/        EmbeddingService, ChunkService
-```
-
-Airflow tasks call these functions. `scripts/ingest_document.py` already chains them directly and is the blueprint for the DAG.
-
-This creates a separation:
-
-```text
-Pipeline and services
-= What work is performed
-
-Airflow
-= When/how the work is orchestrated
-```
-
-The pipeline must remain executable without Airflow.
-
-This is important for:
-
-* local development
-* unit testing
-* debugging
-* future orchestration changes
-
-Conversion takes about 10 s per page on CPU and embedding about 1.6 s per chunk, so task timeouts and retries must allow for several minutes per document. The Airflow worker also needs access to the gated embedding model (Hugging Face token or a pre-downloaded model volume). The `documents.status` transitions belong to this phase.
+The search limits (`DEFAULT_TOP_K`, `MAX_TOP_K`, `MAX_QUESTION_CHARS`) are constants in `retrieval.py`, not settings: they are tuned with evaluation data, not per environment. The Hugging Face token is not a setting: it is stored by `hf auth login`, or supplied as `HF_TOKEN` in deployments. Secrets live only in `.env` (git-ignored) and the environment; `.env.example` holds placeholders.
 
 ---
 
-# 14. Development Execution Modes
+## 12. Local environment (Windows)
 
-The system should support two conceptual execution modes.
+- The project is on D:. The uv cache and Hugging Face cache are on D: too (`UV_CACHE_DIR`, `HF_HOME` under `D:\Backup\School\Project\_caches\`), outside the repository, so C: stays free and caches are never committed.
+- PyTorch is the CPU-only build from an explicit `pytorch-cpu` uv index declared in `pyproject.toml`.
+- Quality gates: Ruff, pytest, pre-commit (including a secret scanner), GitHub Actions CI on every push.
 
-### Direct development mode
-
-Used for fast development and testing.
-
-```text
-FastAPI or script
-   │
-   ▼
-Python pipeline + services
-   │
-   ▼
-Database / Storage
-```
-
-Today this mode is `uv run python -m scripts.ingest_document <document_id>`.
-
-### Orchestrated mode
-
-Used when testing the production-style workflow.
-
-```text
-FastAPI
-   │
-   ▼
-Airflow
-   │
-   ▼
-Python pipeline + services
-   │
-   ▼
-Database / Storage
-```
-
-This prevents Airflow from becoming a requirement for every development action.
+**Tests**
+- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs.
+- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set or a service is unreachable. Each test removes only what it created. Retrieval integration tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0).
+- Real Docling conversion, the real embedding model and real Gemini are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py` and `scripts/smoke_gemini.py`. Current counts: ROADMAP handoff.
 
 ---
 
-# 15. Storage Abstraction
+## 13. Not built yet
 
-The application uses a storage abstraction rather than directly coupling business logic to MinIO.
-
-```text
-Application
-     │
-     ▼
-StorageService (app/services/storage.py)
-     │
-     ▼
-boto3 (S3 API)
-     │
-     ├───────────────┐
-     ▼               ▼
-   MinIO             S3
-   Local             AWS
-```
-
-`StorageService` has three methods: `upload`, `download`, `delete`. It is the only code that imports boto3. boto3 failures are mapped to `NotFoundError` (missing key) or `ExternalServiceError`, so routes never see boto3 exceptions.
-
-Switching between MinIO and S3 is a configuration change:
-
-```text
-Local:  MINIO_ENDPOINT=http://localhost:9000 + MinIO keys
-AWS:    MINIO_ENDPOINT not set → boto3 talks to real S3 (IAM role on EC2)
-```
-
-The goal is not to build an elaborate abstraction framework. A small, practical storage service is sufficient.
-
----
-
-# 16. Local Deployment Architecture
-
-Local development uses Docker Compose.
-
-```text
-Docker Compose
-│
-├── FastAPI
-│
-├── Streamlit
-│
-├── PostgreSQL
-│    └── pgvector
-│
-├── MinIO
-│
-└── Airflow
-```
-
-External dependency:
-
-```text
-Gemini API
-```
-
-EmbeddingGemma runs locally, on CPU, inside the application process (not as a separate service).
-
-Currently, Docker Compose runs PostgreSQL + pgvector (the `pgvector/pgvector:pg18` image) and MinIO, plus a one-time `minio-init` container that creates the `documents` bucket. The API, the pipeline and the embedding model run on the host. Containerizing the application comes in Phase 11.
-
-### Local machine setup (Windows)
-
-* The project lives on D:. The uv cache and the Hugging Face cache are on D: as well (`UV_CACHE_DIR` and `HF_HOME` point to `D:\Backup\School\Project\_caches\...`), outside the repository, so they are never committed and C: stays free. The Hugging Face login token is stored there too.
-* PyTorch is the CPU-only build, installed from an explicit `pytorch-cpu` uv index declared in `pyproject.toml`.
-* Docling, PyTorch and sentence-transformers make the application image large, and Docling and EmbeddingGemma download models at first use. Phase 11 must give those models a persistent volume or a build-time download, with the Hugging Face token as a secret. The embedding model also asks huggingface.co for updates on every load even when cached (about 15 requests, most of the 22 s first search), so containers should run offline with the model pre-downloaded.
-
----
-
-# 17. AWS Deployment Architecture
-
-The target AWS architecture is intentionally simple.
-
-```text
-                         Users
-                           │
-                           ▼
-                         EC2
-                    ┌──────┴──────┐
-                    │             │
-                 FastAPI       Streamlit
-                    │
-          ┌─────────┴──────────┐
-          ▼                    ▼
-        RDS                   S3
-    PostgreSQL             Documents
-    + pgvector
-          │
-          ▼
-      Vector search
-
-External:
-    Gemini API
-```
-
-Supporting AWS services:
-
-```text
-IAM
-CloudWatch
-Terraform
-```
-
-The initial deployment should avoid unnecessary AWS services.
-
-The same Alembic migrations run on RDS; `CREATE EXTENSION vector` is supported on RDS PostgreSQL, but the pgvector version depends on the RDS engine version, so it must be checked. The EC2 instance must be sized for EmbeddingGemma (about 1.2 GB of weights) plus Docling.
-
----
-
-# 18. Environment Separation
-
-The same application should operate in different environments through configuration.
-
-Example:
-
-```text
-Development
-────────────────────────────
-DATABASE_URL → local PostgreSQL
-STORAGE      → MinIO
-GEMINI       → Gemini API
-
-
-AWS
-────────────────────────────
-DATABASE_URL → RDS
-STORAGE      → S3
-GEMINI       → Gemini API
-```
-
-Environment-specific values should not be hardcoded into application logic.
-
-Secrets and configuration should be supplied through environment variables or appropriate deployment configuration.
-
-In code, all configuration is read through one typed `Settings` object (`app/core/config.py`) loaded from environment variables and `.env`. Settings are added only when a phase needs them. Current settings: application (`APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL`), database (`DATABASE_URL`), object storage (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`), uploads (`MAX_UPLOAD_MB`) and the embedding model (`EMBEDDING_MODEL_ID`, which has a default and normally needs no `.env` entry). Phase 5 added no setting: the search limits are constants in `app/services/retrieval.py`, not environment values, because they are tuned with evaluation data and are not environment-specific. The Hugging Face token is not a setting: it is stored by `hf auth login` under `HF_HOME`, or supplied as `HF_TOKEN` in deployments.
-
----
-
-# 19. Testing Architecture
-
-Testing is divided into two main levels.
-
-```text
-tests/
-├── unit/
-└── integration/
-```
-
-### Unit tests
-
-Test individual pieces of logic independently.
-
-Examples:
-
-* chunk processing
-* metadata extraction
-* context construction
-* retrieval logic
-* citation formatting
-
-Unit tests replace dependencies (for example `get_db`, the storage client, the embedding model, or the whole document service) with fakes, so they run fast, need no database, MinIO or model, and work in CI.
-
-Pipeline tests follow the same rule: `test_pipeline_clean.py` (13 tests) uses the exact junk strings found in real PDFs, and `test_pipeline_chunk.py` (6 tests) uses a fake chunker, so no Docling model is loaded. `test_embedding_service.py` (6 tests) uses a fake model and checks the document format, the order of vectors, the query path, and the dimension check. `test_chunk_service.py` (2 tests) checks that bad input is rejected before anything is deleted. The real Docling conversion and the real embedding model are checked manually with `scripts/run_pipeline.py` and `scripts/ingest_document.py`, because they take minutes.
-
-Phase 5 added two unit test files. `test_retrieval_service.py` (7 tests, parametrized) checks that an empty or too long question and a `top_k` outside 1-20 are rejected before the database or the model is touched. `test_search_api.py` (8 tests) replaces `get_retrieval_service` with a fake, and checks the response fields, the default `top_k`, trimming, and six invalid bodies that must return a 422 with the standard error shape and never reach the service.
-
-### Integration tests
-
-Test interactions between components.
-
-Examples:
-
-* PostgreSQL + pgvector
-* object storage
-* document ingestion
-* retrieval pipeline
-* API endpoints
-
-Integration tests use the real PostgreSQL and MinIO containers. They skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set, or when a service is not reachable, so CI (which has neither) stays green. Each test removes only the rows and files it created. The chunk integration tests (8) use small fake vectors of the right size, so they need no embedding model, and they cover provenance round trip, replacement, empty replacement, cascade deletion, rejected input, an unknown document, and a failed commit that must keep the old chunks.
-
-The retrieval integration tests (3, in `test_retrieval_integration.py`) use a fake embedding service and three hand-made unit vectors with known similarity to the query: 1.0, 0.7071 and 0.0. They check the ranking, the provenance round trip (document ID, file name, pages, heading including `None`), `top_k`, and that the question is stripped before embedding. The real documents already in the database are left alone: the fixture creates and deletes only its own document, and the test asserts only that its two closest chunks come first.
-
-Test file names must be unique across all of `tests/` (see section 3).
-
-At the end of Phase 5 the suite has 93 tests.
-
-The test strategy should remain proportional to the project's size.
-
----
-
-# 20. Architecture Evolution
-
-The architecture should evolve based on demonstrated requirements.
-
-Initial system:
-
-```text
-Modular monolith
-+
-PostgreSQL/pgvector
-+
-MinIO
-+
-Airflow
-+
-Gemini
-```
-
-Possible future evolution:
-
-```text
-Dense retrieval
-      ↓
-Evaluation
-      ↓
-Hybrid retrieval if needed
-      ↓
-Reranking if needed
-      ↓
-Other improvements if justified
-```
-
-The same principle applies to infrastructure.
-
-A new technology should be introduced only when:
-
-1. the current architecture has a demonstrated limitation,
-2. the new technology solves that limitation,
-3. the additional complexity is justified.
-
----
-
-# 21. Core Architectural Principles
-
-### Separation of responsibilities
-
-Each component should have one clear primary responsibility.
-
-### Pipeline independence
-
-Document-processing logic must not depend on FastAPI or Airflow.
-
-### Provenance preservation
-
-Document metadata must survive the ingestion and retrieval process so citations remain possible.
-
-### Infrastructure portability
-
-Application logic should not be tightly coupled to MinIO, S3, or a particular deployment environment.
-
-### Simple first
-
-The first implementation should use the simplest architecture that can satisfy the requirements.
-
-### Evaluation before optimization
-
-Retrieval and RAG improvements should be driven by measured failures rather than assumptions.
-
-### One application, multiple environments
-
-The core application should remain the same between local development and AWS deployment.
-
----
-
-## 22. Architectural Mental Model
-
-The entire system can be understood as five major layers:
-
-```text
-┌─────────────────────────────────────┐
-│              USER / UI              │
-│             Streamlit              │
-└──────────────────┬──────────────────┘
-                   │
-┌──────────────────▼──────────────────┐
-│                API                  │
-│              FastAPI                │
-└──────────────────┬──────────────────┘
-                   │
-┌──────────────────▼──────────────────┐
-│          APPLICATION LOGIC          │
-│  Documents | Retrieval | RAG | AI  │
-└───────────┬─────────────┬───────────┘
-            │             │
-┌───────────▼───────┐ ┌───▼───────────┐
-│    DATA LAYER     │ │   AI LAYER    │
-│ PostgreSQL        │ │ Gemini         │
-│ pgvector          │ │ EmbeddingGemma │
-│ MinIO / S3        │ │                │
-└───────────────────┘ └────────────────┘
-
-          ORCHESTRATION
-              Airflow
-                 │
-                 ▼
-        Document Processing
-```
-
-The architecture should remain understandable from this diagram.
-
-If the system becomes significantly more complicated than this without a strong reason, the complexity should be questioned before implementation.
+Evaluation (Phase 7), Airflow orchestration and the `documents.status` lifecycle (8), Streamlit UI (9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Hybrid retrieval, reranking, a vector index and a similarity threshold are deliberately absent until evaluation shows a need.
