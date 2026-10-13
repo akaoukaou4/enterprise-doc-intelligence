@@ -89,6 +89,9 @@ data/**/*.csv
 !data/sample_docs/
 !data/eval/
 
+# Fictional AI-generated corpus (see data/corpus/SOURCES.md): committed on purpose
+!data/corpus/*.pdf
+
 # Docling exploration output (generated, can be large)
 data/sample_docs/output/
 

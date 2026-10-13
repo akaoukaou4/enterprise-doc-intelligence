@@ -87,7 +87,7 @@ uv and Hugging Face cache large downloads under your user folder on C: by defaul
 
 ### 1. Upload a PDF
 
-In `/docs`, use `POST /api/v1/documents` ("Try it out"), or:
+A fictional test corpus of company policy PDFs is in `data/corpus/` (origin: `data/corpus/SOURCES.md`). Use it to try the system. In `/docs`, use `POST /api/v1/documents` ("Try it out"), or:
 
 ```powershell
 curl.exe -F "file=@C:\path\to\your.pdf;type=application/pdf" http://localhost:8000/api/v1/documents

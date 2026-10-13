@@ -7,20 +7,20 @@
 
 ## Handoff (read this first)
 
-Updated: 2026-10-13, after Phase 6.
+Updated: 2026-10-13, after Phase 6, the docs restructure and the corpus move into the repo.
 
 - **Product:** upload PDFs, ask questions, get grounded answers with document, page and section citations, or a clear "not found".
 - **Current phase:** Phase 6 is complete. **Phase 7 (evaluation) is next and not started.**
 - **What works today:** upload (`POST /api/v1/documents`), manual ingestion (`scripts/ingest_document.py <document_id>`), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`). Last verified: 129 unit tests pass, 15 integration tests skip without Docker, Ruff clean, CI green (commit `2203c20`).
 - **What does not exist yet:** evaluation, Airflow, UI, Docker image for the app, AWS, Terraform. No list or delete endpoint for documents. Upload does not start ingestion. `documents.status` stays `uploaded`.
-- **Data state:** 3 policy PDFs of a fictional German company are ingested (21, 11, 32 chunks). 11 more policy PDFs exist outside the repo, not ingested. Everything private stays outside Git.
+- **Data state:** the test corpus is 14 AI-generated policy PDFs of a fictional German company, committed in `data/corpus/` (origin in `data/corpus/SOURCES.md`, decision D-40). 3 are ingested in the local database (21, 11, 32 chunks: Workplace-Policies, Smoke-Free-Workplace-Policy, Working-Hours-PTO-and-Vacation); 11 are not. Third-party or private documents (for example the ISO 27001 PDF) stay outside Git.
 - **LLM:** `gemini-3.5-flash-lite` on the Gemini API free tier. Limits and data-use terms: DECISIONS.
 - **Rules in force:**
   - Only fictional or openly licensed documents may go to Gemini (free tier may use the data). The ISO 27001 PDF stays local.
   - No similarity threshold, hybrid search, reranking or vector index until Phase 7 shows a need.
   - One change per experiment, measured against the same question set.
   - The AI never writes citations; code builds them from stored chunks.
-- **Next action:** design the Phase 7 question set (see Phase 7).
+- **Next action (Phase 7, step 1):** draft the question set from the corpus PDFs. The user attaches the PDFs to the chat in batches (first batch: confidentiality, harassment, substance abuse, health and safety, handbook); the AI reads them and writes questions with expected answers, pages and kinds. Then step 2: a bulk script to upload and ingest a whole folder. Then step 3: the runner and the baseline.
 - **Documents:** README (use), ROADMAP (this), ARCHITECTURE (system now), DECISIONS (why), PROJECT (scope). Working rules live in the private kit, loaded by the Project instructions.
 
 ---
@@ -60,7 +60,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 **Why now:** Phase 6 answers were checked by hand on a handful of questions. That is a demo, not a measurement. The open questions below cannot be answered without data.
 
 **Build:**
-1. **Corpus.** Ingest the 11 remaining policy PDFs in batches (a few minutes per file on this CPU). Only fictional or openly licensed documents.
+1. **Corpus.** The 14 PDFs are in `data/corpus/`. Ingest the 11 remaining ones with a small bulk script (`scripts/ingest_folder.py`: upload and ingest every PDF in a folder; a few minutes per file on this CPU). Only fictional or openly licensed documents.
 2. **Question set** in `data/eval/` as JSON (not CSV: `.gitignore` ignores `data/**/*.csv`). Each item: question, expected answer facts, expected document, expected page, kind. Aim for about 40 questions to start, in these kinds:
    - answerable from one passage
    - answerable only by combining passages

@@ -79,7 +79,8 @@ migrations/              Alembic (env.py reads the URL from Settings); versions/
 scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, smoke_gemini
 tests/unit/              fakes; run everywhere including CI
 tests/integration/       real PostgreSQL and MinIO; skip themselves when unavailable
-data/eval/               evaluation sets (Phase 7); data/sample_docs/output/ is git-ignored
+data/corpus/             the fictional test corpus (14 policy PDFs, committed; origin in SOURCES.md)
+data/eval/               evaluation sets (Phase 7); other PDFs under data/ and data/sample_docs/output/ are git-ignored
 ui/                      reserved for the Streamlit UI (Phase 9)
 ```
 
