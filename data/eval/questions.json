@@ -1,0 +1,899 @@
+{
+  "version": 4,
+  "corpus_dir": "data/corpus",
+  "batch": "4 of 4 (all 14 PDFs read)",
+  "schema": {
+    "kind": "single_passage | multi_passage | table | overlap | cross_language | near_miss | not_answerable",
+    "expected_found": "true if the corpus answers it, false if the system must refuse",
+    "expected_facts": "facts a correct answer must contain (reviewed by hand at first)",
+    "expected_sources": "acceptable places for the answer: file + page numbers (1-based, as printed in the PDF footer). One entry per page where a page matters; an entry with several pages means any of those pages",
+    "sources_match": "'any' = one listed source is enough; 'all' = every listed source is needed (answer spans pages)",
+    "notes": "why the question is in the set, known traps, and where the corpus disagrees with itself"
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "question": "Where should confidential paper documents go when they are no longer needed?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Shred them when they are no longer needed"
+      ],
+      "expected_sources": [
+        { "file": "Employee-confidentiality-policy.pdf", "pages": [3] },
+        { "file": "Workplace-Policies.pdf", "pages": [2] }
+      ],
+      "sources_match": "any",
+      "notes": "Workplace-Policies section 2 (page 2, same as the Phase 6 manual run E-1) only says to shred. The Confidentiality Policy (page 3) adds the lockable shredding containers (Datenschutztonnen) at each site and 'do not use ordinary paper bins'. An answer with those details is better but they are not required. No other file mentions shredding."
+    },
+    {
+      "id": "q02",
+      "question": "How quickly must a personal data breach be reported to the supervisory authority?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Within 72 hours (the supervisory authority is notified, where required by the GDPR)",
+        "Report the suspected breach internally immediately (privacy@norvane.example and the IT helpdesk); do not wait until you are sure"
+      ],
+      "expected_sources": [
+        { "file": "Employee-confidentiality-policy.pdf", "pages": [4] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "Confidentiality Policy section 9 (page 4) and Handbook section 3.1 (page 4) both give 72 hours. 'Do not wait until you are sure' is only in the Confidentiality Policy; the Handbook says 'every hour counts'."
+    },
+    {
+      "id": "q03",
+      "question": "Who is responsible for disk encryption and encrypted storage at the company?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "Priya Raman, the CISO",
+        "Technical details are in NS-IT-POL-001"
+      ],
+      "expected_sources": [
+        { "file": "Employee-confidentiality-policy.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "Row of a table that starts on page 3. The header row (Measure / How we do it / Responsible) is on page 3, so this tests the known header-loss limit (D-12)."
+    },
+    {
+      "id": "q04",
+      "question": "Which grounds of discrimination does the company explicitly prohibit?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Race or ethnic origin",
+        "Gender",
+        "Religion or belief",
+        "Disability",
+        "Age",
+        "Sexual identity",
+        "Based on the General Equal Treatment Act (AGG)"
+      ],
+      "expected_sources": [
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [2] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [3] },
+        { "file": "Employment-Basics.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "Harassment Policy section 1 (page 2), Handbook section 2.2 (page 3) and Employment Basics section 3.1 (page 3) give the list. Employment Basics also names nationality, which the other two do not, so 'nationality' is accepted but not required. Workplace-Policies (page 3) and Compensation (page 2) only mention the AGG, with no list."
+    },
+    {
+      "id": "q05",
+      "question": "A customer keeps harassing me. Who can I talk to, and can my manager tell me to put up with it to keep the customer?",
+      "language": "en",
+      "kind": "multi_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "Report it like any other harassment",
+        "The manager must not ask you to tolerate it to keep a customer",
+        "Options: line manager, HR, confidential counselling (EAP), Works Council, ethics hotline",
+        "Avoid talking to the customer directly about it"
+      ],
+      "expected_sources": [
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [2] },
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [3] }
+      ],
+      "sources_match": "all",
+      "notes": "Section 4 (page 2) and the contact table in section 5 (page 3). Workplace-Policies (page 3) lists only offender, manager and HR and does not say a manager must not ask you to tolerate it, so the Harassment Policy is the full source."
+    },
+    {
+      "id": "q06",
+      "question": "What are the target times for each step of the harassment complaint process?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "Complaint acknowledged in writing within 2 working days",
+        "Initial confidential conversation within 5 working days",
+        "Investigation normally within 30 days",
+        "Decision communicated within 5 working days after the investigation",
+        "Follow-up conversation about 4 weeks later"
+      ],
+      "expected_sources": [
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [3] },
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [4] }
+      ],
+      "sources_match": "all",
+      "notes": "One table split by a page break: steps 1-2 on page 3, steps 3-5 on page 4. Tests table splitting (D-12)."
+    },
+    {
+      "id": "q07",
+      "question": "Who is the Works Council chair and how do I contact them?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Thomas Bauer",
+        "betriebsrat@norvane.example",
+        "Extension 2500"
+      ],
+      "expected_sources": [
+        { "file": "Employee-confidentiality-policy.pdf", "pages": [5] },
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [3, 4] },
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] },
+        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [5] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [11] },
+        { "file": "Employee-Code-of-Conduct.pdf", "pages": [8] },
+        { "file": "Workplace-Policies.pdf", "pages": [7] },
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [7] },
+        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [8] },
+        { "file": "Employment-Basics.pdf", "pages": [7] },
+        { "file": "Employee-Compensation-and-Development.pdf", "pages": [7] },
+        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [4] },
+        { "file": "Sample_Business_Dress_Code_Policy.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "The same contact is in 13 of the 14 files on purpose: any of them is correct. Employee-Benefits-and-Perks is the only file without it."
+    },
+    {
+      "id": "q08",
+      "question": "Does the Works Council have to be involved before an employee is dismissed for breaking a policy?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Yes, the Works Council (Betriebsrat) is heard before any termination"
+      ],
+      "expected_sources": [
+        { "file": "Employee-confidentiality-policy.pdf", "pages": [5] },
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [4] },
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] },
+        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [5] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [10] },
+        { "file": "Workplace-Policies.pdf", "pages": [1] },
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [5] },
+        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [3] },
+        { "file": "Sample_Business_Dress_Code_Policy.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "Confidentiality section 11, Harassment section 8, Substance section 9, Health and Safety section 8, Handbook section 8.3, Workplace-Policies section 1, Resignation section 4.2 step 3 ('no termination is valid without it'), Smoke-Free section 6 and Dress Code section 6. The Code of Conduct (page 5) says only 'involvement of the Works Council as required', so it is not listed."
+    },
+    {
+      "id": "q09",
+      "question": "Can I drink alcohol if I drive a company vehicle?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "No, zero alcohol (0.0 per mille) in any company vehicle",
+        "Also applies when driving to or from a work event"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] }
+      ],
+      "sources_match": "any",
+      "notes": "Row of the 'Alcohol at a glance' table. Benefits section 7.2 (page 6) only says to drive safely and sober, with no limit, so it is not a source. No other file has a per-mille rule."
+    },
+    {
+      "id": "q10",
+      "question": "Does the company carry out random drug or alcohol tests?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "No random drug or alcohol tests",
+        "Job candidates and employees being promoted are not tested",
+        "A fitness assessment only with a concrete reason (safety-sensitive job) or an unclear workplace accident, by the company physician, with informed consent"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [3] }
+      ],
+      "sources_match": "any"
+    },
+    {
+      "id": "q11",
+      "question": "Do I have to tell my manager which medication I take?",
+      "language": "en",
+      "kind": "multi_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "No, you do not have to tell your diagnosis or the name of your medication",
+        "If it affects your ability to work safely, you must not do safety-sensitive tasks",
+        "Tell your manager only that you cannot do certain tasks, or speak to the company physician in confidence"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] },
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [3] }
+      ],
+      "sources_match": "all",
+      "notes": "Section 4 is split by a page break: the first paragraph is on page 2, the rest on page 3. The Handbook (page 5) only says to discuss medication with the company physician, and Workplace-Policies (page 6) says to ask for the rest of the day off, so neither is a source for the 'no need to tell' fact."
+    },
+    {
+      "id": "q12",
+      "question": "Will I get in trouble if I ask for help with an alcohol problem?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "Asking for help will not by itself lead to disciplinary action",
+        "Support: confidential counselling (EAP), company physician, external addiction counselling, Krankenkasse",
+        "A stepwise plan (Stufenplan) may be agreed with the Works Council"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] }
+      ],
+      "sources_match": "any"
+    },
+    {
+      "id": "q13",
+      "question": "Ich habe meinen Firmenlaptop verloren. Wen muss ich informieren, und wie schnell?",
+      "language": "de",
+      "kind": "cross_language",
+      "expected_found": true,
+      "expected_facts": [
+        "Report to the IT helpdesk (helpdesk@norvane.example, ext. 3000)",
+        "Report promptly: immediately and without waiting to be sure (Confidentiality Policy), or within 24 hours at the latest (Handbook, Benefits and Perks)"
+      ],
+      "expected_sources": [
+        { "file": "Employee-confidentiality-policy.pdf", "pages": [4] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [6] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
+        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [7] }
+      ],
+      "sources_match": "any",
+      "notes": "German question, English documents. The answer should be in German. The Confidentiality Policy (page 4) also names privacy@norvane.example (ext. 2600). The Handbook (sections 4.2 and 6.6, pages 6 and 8) and Benefits and Perks (section 9.2, page 7) say 24 hours; the Benefits policy and Handbook 6.6 add a police report for theft. The two time limits differ in wording, so accept either."
+    },
+    {
+      "id": "q14",
+      "question": "Que doit faire un responsable s'il soupçonne qu'un employé est sous influence au travail ?",
+      "language": "fr",
+      "kind": "cross_language",
+      "expected_found": true,
+      "expected_facts": [
+        "Speak to the employee privately (a second manager or a Works Council member may join if the employee wishes)",
+        "Stop the employee from safety-sensitive work immediately and arrange safe transport home, not by driving",
+        "Call 112 in a medical emergency",
+        "Inform HR the same day and record what was observed",
+        "The manager must not diagnose a cause"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [3] },
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] }
+      ],
+      "sources_match": "all",
+      "notes": "French question, English documents, and a list split by a page break (page 3 to 4). The answer should be in French."
+    },
+    {
+      "id": "q15",
+      "question": "How many months does the non-compete obligation last after someone leaves the company?",
+      "language": "en",
+      "kind": "near_miss",
+      "expected_found": false,
+      "expected_facts": [],
+      "expected_sources": [],
+      "sources_match": "any",
+      "notes": "The Confidentiality Policy (page 4) says post-employment non-competes need an individual written agreement with compensation and are not part of the policy. Workplace-Policies (page 2) says only that you may be asked to sign non-compete and non-disclosure agreements when hired. No file gives a duration. Acceptable: says that, with no duration."
+    },
+    {
+      "id": "q16",
+      "question": "Within how many weeks do I have to file a claim under the AGG?",
+      "language": "en",
+      "kind": "near_miss",
+      "expected_found": false,
+      "expected_facts": [],
+      "expected_sources": [],
+      "sources_match": "any",
+      "notes": "The Harassment Policy (page 3) says only that legal deadlines may apply and that HR or the Works Council can advise. No file gives a number. A number in the answer comes from the model's general knowledge, which is a grounding failure. Acceptable: says deadlines may apply and points to HR or the Works Council."
+    },
+    {
+      "id": "q17",
+      "question": "What is the maximum fine for a GDPR violation?",
+      "language": "en",
+      "kind": "not_answerable",
+      "expected_found": false,
+      "expected_facts": [],
+      "expected_sources": [],
+      "sources_match": "any",
+      "notes": "Several files mention the GDPR and the 72-hour rule, but none gives fines. The model probably knows the real answer, so this tests refusal against general knowledge."
+    },
+    {
+      "id": "q18",
+      "question": "Where do I go when the fire alarm sounds at the Garching depot?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "The assembly point is parking area P2"
+      ],
+      "expected_sources": [
+        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [4] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [5] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
+        { "file": "Workplace-Policies.pdf", "pages": [5] },
+        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [7] }
+      ],
+      "sources_match": "any",
+      "notes": "Assembly-point tables in Health and Safety section 5 (page 4), Handbook section 3.3 (page 5) and Workplace-Policies section 4.2 (page 5); parking rows in Handbook 6.5 (page 8) and Benefits section 8 (page 7). Five files, one answer."
+    },
+    {
+      "id": "q19",
+      "question": "Do I have to report a near miss, and who do I tell?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Yes: accidents, near misses and unsafe conditions must be reported",
+        "On the same working day",
+        "To your line manager and the Safety Officer, Carlos Mendes (ext. 2400)"
+      ],
+      "expected_sources": [
+        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [4] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [5] },
+        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "Health and Safety section 6 (page 4), Handbook section 3.3 (page 5), Benefits section 4 (page 4: 'Near misses and hazards are reported in the same way')."
+    },
+    {
+      "id": "q20",
+      "question": "Am I allowed to do a highly dangerous task on my own?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "No: highly dangerous job tasks require at least two employees to be present (no lone working)"
+      ],
+      "expected_sources": [
+        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "One bullet in section 4.2 (page 3). No other file mentions lone working."
+    },
+    {
+      "id": "q21",
+      "question": "How does the employee referral bonus work?",
+      "language": "en",
+      "kind": "multi_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "EUR 1,500 for standard roles",
+        "EUR 3,000 for priority roles on the quarterly list published by HR (for example cloud security and senior DevOps)",
+        "Paid with the payroll after the new colleague has passed the 6-month probation",
+        "Not paid for roles in HR, for recruiters or for your own line reports",
+        "Submit the referral through the Personio referral link before the candidate applies"
+      ],
+      "expected_sources": [
+        { "file": "Employment-Basics.pdf", "pages": [5] },
+        { "file": "Employment-Basics.pdf", "pages": [6] }
+      ],
+      "sources_match": "all",
+      "notes": "Employment Basics section 5 is split by a page break: the bonus table and the first rule are on page 5, the other rules and 'How to refer' on page 6. The Handbook (section 2.3, pages 3 and 4) gives an older, shorter version: only EUR 1,500, no priority roles, no 'recruiters' exclusion. A Handbook-only answer is incomplete."
+    },
+    {
+      "id": "q22",
+      "question": "Who has to approve a business expense claim of EUR 800?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "Your line manager (claims above EUR 500)",
+        "Submit the claim in Personio within 30 days of the expense, with receipts"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
+        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [6] }
+      ],
+      "sources_match": "any",
+      "notes": "Needs a threshold lookup in the table: up to EUR 500 Finance, above EUR 500 line manager, above EUR 5,000 department head. Handbook section 6.3 (page 8) and Benefits section 6.1 (page 6) have the same table."
+    },
+    {
+      "id": "q23",
+      "question": "Bis wann muss ich mich krankmelden, und ab wann brauche ich ein ärztliches Attest?",
+      "language": "de",
+      "kind": "cross_language",
+      "expected_found": true,
+      "expected_facts": [
+        "Notify the line manager and HR by 09:00 on the first day of illness",
+        "A doctor's note is needed from the third calendar day of illness (it may be requested earlier)"
+      ],
+      "expected_sources": [
+        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [6] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [9] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "German question, English documents. Leave and Absence Policy section 5.1 (page 6, table) and Handbook section 7.4 (page 9) have both facts; Handbook section 2.4 (page 4) and Employment Basics section 6 (page 6) have only the notification time. All say Garching shift staff notify 30 minutes before the shift."
+    },
+    {
+      "id": "q24",
+      "question": "How much severance pay do I get for each year of employment?",
+      "language": "en",
+      "kind": "near_miss",
+      "expected_found": false,
+      "expected_facts": [],
+      "expected_sources": [],
+      "sources_match": "any",
+      "notes": "Handbook section 8.3 (page 10) and Resignation section 4.4 (page 5) say there is generally no automatic entitlement to severance pay; an agreed payment is set out in a settlement or termination agreement, and larger restructurings get a social plan (Sozialplan) with the Works Council. No file gives a formula or amount. Acceptable: says that, with no figure."
+    },
+    {
+      "id": "q25",
+      "question": "A supplier offered me a gift worth EUR 80. Can I accept it?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "No: politely decline anything above EUR 50 in value, or report it to your line manager and the ethics hotline",
+        "Never accept cash or anything offered in exchange for a decision"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Code-of-Conduct.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "Row of the conflict-of-interest table in section 4. Needs a threshold comparison (80 > 50). No other file covers gifts from suppliers (Compensation page 3 mentions only an anniversary gift from the Managing Directors)."
+    },
+    {
+      "id": "q26",
+      "question": "What do I need to arrange before a visitor can come to the Frankfurt data center?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "Register the visit two working days ahead, with approval by the CISO (Priya Raman)",
+        "Visitors register at Gate A",
+        "Photo ID is required",
+        "Visitors are escorted at all times"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Code-of-Conduct.pdf", "pages": [7] }
+      ],
+      "sources_match": "any",
+      "notes": "The Frankfurt row is on page 7, but the table header row (Site / Visitors register at / Register in advance / Additional rules) and the Munich and Berlin rows are on page 6, so this tests the header-loss limit (D-12). Handbook section 4.6 (page 6) says only that the data center needs approval from the CISO or the COO, so it is not a full source."
+    },
+    {
+      "id": "q27",
+      "question": "¿Puedo usar mi correo electrónico de la empresa para asuntos personales?",
+      "language": "es",
+      "kind": "cross_language",
+      "expected_found": true,
+      "expected_facts": [
+        "Yes, limited personal use is allowed",
+        "Conditions: keep your account safe, avoid spamming, do not disclose confidential information (and it must not interfere with work or security)"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Code-of-Conduct.pdf", "pages": [3] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [6] }
+      ],
+      "sources_match": "any",
+      "notes": "Spanish question, English documents. The Code of Conduct (section 3.3, page 3) has the conditions; the Handbook (section 4.2, page 6) says private use is tolerated if it does not interfere with work or security."
+    },
+    {
+      "id": "q28",
+      "question": "At which work occasions may alcohol be consumed, and where is it never allowed?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Not on a normal working day, including remote work",
+        "Moderate consumption is allowed at approved business meetings, customer events and company parties, with non-alcoholic alternatives always offered",
+        "Zero alcohol (0.0 per mille) in any company vehicle",
+        "No alcohol before or during safety-sensitive work"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] }
+      ],
+      "sources_match": "any",
+      "notes": "The 'Alcohol at a glance' table on page 2 is the specific rule. Two other files say less: Handbook section 3.3 (page 5) allows alcohol only at company events approved by the Managing Directors, and Workplace-Policies section 4.4 (page 6) allows moderate drinking at company events and bans it during working hours. The Handbook (page 2) says the specific policy applies when they differ, so a good answer follows the Substance Abuse Policy. A summary that says alcohol is allowed only at MD-approved events loses points."
+    },
+    {
+      "id": "q29",
+      "question": "What is the notice period if the company terminates my employment after 12 years of service?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "5 months to the end of a calendar month",
+        "This longer period applies to termination by the company only (statutory extension)"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "Row 'Termination by the company after 12 / 15 / 20 years of service: 5 / 6 / 7 months' in the notice table (section 3.2). Needs a lookup (12 years = 5 months). The Handbook (page 10) and Employment Basics (page 3) list only the 2 weeks and 3 months rows, so an answer based on them alone is wrong."
+    },
+    {
+      "id": "q30",
+      "question": "How long is the notice period if I resign after my probation?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "3 months to the end of a calendar month",
+        "During probation (first 6 months) it is 2 weeks"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Handbook-1.pdf", "pages": [10] },
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [4] },
+        { "file": "Employment-Basics.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "Handbook section 8.2 (page 10), Resignation section 3.2 (page 4) and Employment Basics section 2.4 (page 3) give the same two rows. The Resignation table adds longer company-only periods, which do not apply to a resignation."
+    },
+    {
+      "id": "q31",
+      "question": "What are the steps of the progressive discipline process?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "Six steps of increasing severity",
+        "1 verbal warning, 2 documented meeting with an improvement plan, 3 formal written warning (Abmahnung)",
+        "4 formal disciplinary meeting (transfer of tasks or other measures within the contract), 5 final written warning (letzte Abmahnung), 6 termination after the Works Council hearing"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [2] }
+      ],
+      "sources_match": "any",
+      "notes": "Six-row table in section 2.1. The Handbook (section 8.1, page 10) describes a shorter version (discuss, then a formal written warning, then termination), so a Handbook-only answer misses the six steps."
+    },
+    {
+      "id": "q32",
+      "question": "What happens to an employee who is found guilty of sexual harassment?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Termination of employment is a consequence or a possible consequence, in serious cases even without notice"
+      ],
+      "expected_sources": [
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [2] },
+        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [4] },
+        { "file": "Workplace-Policies.pdf", "pages": [3] },
+        { "file": "Workplace-Policies.pdf", "pages": [6] },
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "The files differ in strength. Harassment Policy: serious disciplinary action up to and including termination (page 2); termination without notice may be justified (page 4). Workplace-Policies: they will be terminated (pages 3 and 6). Resignation section 2.2 (page 3): entry at step 5 (final written warning), or termination without warning if trust is irreparably destroyed. All agree that termination is possible, which is the required fact. A good answer does not claim more certainty than its sources."
+    },
+    {
+      "id": "q33",
+      "question": "How much time does the Works Council have to respond to a planned termination?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "1 week for an ordinary termination",
+        "3 days for an extraordinary (immediate) termination"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "A table cell in section 4.2 (step 3, Timing column). The row text wraps over five lines, which tests table flattening. No other file gives the response time."
+    },
+    {
+      "id": "q34",
+      "question": "My flexitime balance is at +50 hours. What do I have to do?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "A balance between +40 and +60 hours: you and your line manager agree a plan to reduce it",
+        "Within 3 months"
+      ],
+      "expected_sources": [
+        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "Needs a range lookup in the flexitime table (section 2.5). Neighbouring rows: up to +40 free to use, above +60 not credited without written approval. No other file gives these limits."
+    },
+    {
+      "id": "q35",
+      "question": "Which public holiday is observed only at the Berlin office?",
+      "language": "en",
+      "kind": "table",
+      "expected_found": true,
+      "expected_facts": [
+        "International Women's Day (08.03.)"
+      ],
+      "expected_sources": [
+        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "Needs a column scan of the holiday table in section 4.1 (Munich/Garching, Berlin, Frankfurt): only Berlin has 'Yes' for International Women's Day. The Handbook (page 9) only says Berlin follows Berlin holidays. The table's last row gives the totals: 13, 10, 10."
+    },
+    {
+      "id": "q36",
+      "question": "How many days of paid partner leave do fathers get, and by when must they take them?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "10 working days of paid partner leave",
+        "Must be taken within 8 weeks after the birth (the same applies to the placement of an adopted child)",
+        "Inform HR at least 3 months before the expected date where possible"
+      ],
+      "expected_sources": [
+        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [8] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 7.2 (page 8). The Handbook (page 10, section 7.6) does not mention partner leave."
+    },
+    {
+      "id": "q37",
+      "question": "How much does the employer contribute to the company pension scheme?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "EUR 60 per month, employer-funded, after probation",
+        "You can add your own contribution through salary conversion (Entgeltumwandlung)",
+        "The employer adds the statutory subsidy of 15 percent of the converted amount"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 3.2 (page 3). The Handbook (page 7) only says 'employer-funded company pension scheme after probation', with no amount, so a Handbook-only answer is incomplete. Compensation and Employment Basics do not mention the pension."
+    },
+    {
+      "id": "q38",
+      "question": "Can I work from abroad, and for how long?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Yes, with prior approval from HR and the CISO",
+        "Maximum 20 working days per calendar year"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
+        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "Handbook section 6.2 (page 8, a paragraph) and Benefits section 5.2 (page 5, a table row) say the same."
+    },
+    {
+      "id": "q39",
+      "question": "May I use cannabis at work, even though it is legal in Germany?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "No: cannabis may not be consumed at work, on company premises or during working hours",
+        "Legal use in private life under the Cannabis Act (KCanG) does not change this"
+      ],
+      "expected_sources": [
+        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] },
+        { "file": "Workplace-Policies.pdf", "pages": [5] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [5] },
+        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [2] }
+      ],
+      "sources_match": "any",
+      "notes": "Substance Abuse section 3 (page 2), Smoke-Free section 2 (page 2), Workplace-Policies section 4.4 (page 5) and Handbook section 3.3 (page 5). Only the last two say it is legal in private life under the KCanG; Smoke-Free and Substance Abuse refer to the Act without saying that."
+    },
+    {
+      "id": "q40",
+      "question": "What support does the company offer to victims of workplace violence?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "May cover relevant medical bills",
+        "May pay for mental health treatment if needed",
+        "May provide the company lawyer's services to help file lawsuits"
+      ],
+      "expected_sources": [
+        { "file": "Workplace-Policies.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 3.3 (page 4), three bullets after a page break from the start of the violence section. The Harassment Policy does not list these measures."
+    },
+    {
+      "id": "q41",
+      "question": "If the company paid for my training and I resign early, how much do I have to repay?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "Only if you signed a separate written agreement to stay for a fixed period of up to 24 months",
+        "The repayment amount is reduced by one twenty-fourth for every full month of employment after the training",
+        "Repayment clauses are agreed individually before the costs are incurred and must be reasonable (HR checks with Legal)"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [4] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 3.4 (page 4). The Handbook (page 10) says only that the terms in your signed agreement apply, with no formula. Compensation section 7.1 (page 6) adds that a repayment agreement may be asked for external training above EUR 3,000, and points to this section, but gives no formula."
+    },
+    {
+      "id": "q42",
+      "question": "Can I resign by email?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "No: notice must be in writing and signed by hand (Schriftform)",
+        "Emails, messages and verbal statements are not valid",
+        "Send the signed notice to HR (hr@norvane.example)"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [2] },
+        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "A yes/no question answered by inference: the 'emails are not valid' sentence is in section 1 (page 2), the signed-by-hand notice to HR in section 3.1 (page 3). The Handbook (page 10) says only 'in writing, signed', so it does not settle email."
+    },
+    {
+      "id": "q43",
+      "question": "How much of my salary can I convert into the company pension per month?",
+      "language": "en",
+      "kind": "near_miss",
+      "expected_found": false,
+      "expected_facts": [],
+      "expected_sources": [],
+      "sources_match": "any",
+      "notes": "Benefits section 3.2 (page 3) says you can add your own contribution through salary conversion and gives the employer subsidy (15 percent of the converted amount) but no maximum conversion amount. A figure in the answer comes from the model's general knowledge, which is a grounding failure. Acceptable: says no limit is stated and points to HR (Jordan Ellis). Same topic as q37, which is answerable."
+    },
+    {
+      "id": "q44",
+      "question": "What is the capital of Australia?",
+      "language": "en",
+      "kind": "not_answerable",
+      "expected_found": false,
+      "expected_facts": [],
+      "expected_sources": [],
+      "sources_match": "any",
+      "notes": "Fully off-topic: the corpus is workplace policies. The model knows the answer, so this tests refusal on general knowledge with no related passage. The system should say the documents do not contain it."
+    },
+    {
+      "id": "q45",
+      "question": "What is the referral bonus if I refer a senior DevOps engineer?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "EUR 3,000 if the role is on the quarterly priority list published by HR (cloud security and senior DevOps are given as examples)",
+        "Otherwise EUR 1,500 (standard roles)"
+      ],
+      "expected_sources": [
+        { "file": "Employment-Basics.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "The corpus disagrees with itself here. The Handbook (section 2.3, page 3, version 1.2 of 01.01.2026) says a flat EUR 1,500. Employment Basics (section 5, page 5, version 1.3 of 01.03.2026) added the priority roles list with EUR 3,000, and the Handbook (page 2) says the specific policy applies when they differ. An answer that says only EUR 1,500 is wrong."
+    },
+    {
+      "id": "q46",
+      "question": "Does the Works Council have to agree before the company hires someone?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "Yes: before every hire HR informs the Works Council and asks for its consent under the Works Constitution Act (BetrVG)",
+        "The offer is made only after the Works Council has responded or the legal period of one week has expired"
+      ],
+      "expected_sources": [
+        { "file": "Employment-Basics.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 4.3 (page 5; step 12 of the process table is on the same page). Easy to confuse with the dismissal questions q08 and q33, which are about termination, not hiring. The Handbook's recruitment table (page 3) has no Works Council step."
+    },
+    {
+      "id": "q47",
+      "question": "Can the company check my social media or ask for a criminal-record certificate when I apply?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "No external background-check providers and no screening of candidates' private social media",
+        "A certificate of good conduct (Führungszeugnis) can be requested from finalists only for roles where it is legally justified or a customer contract requires it, and never before the offer stage",
+        "HR, not the hiring manager, views it, records only that it was checked, and keeps no copy"
+      ],
+      "expected_sources": [
+        { "file": "Employment-Basics.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 4.5 (page 5). The Handbook (section 2.3, page 3, step 5) covers only the certificate and the offer-stage rule, not social media or who sees it, so a Handbook-only answer is partial."
+    },
+    {
+      "id": "q48",
+      "question": "Do I have a right to educational leave if I work at the Munich HQ?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "No: Bavaria has no such law",
+        "A statutory right to educational leave exists only in Berlin (Bildungszeit) and Hesse (Bildungsurlaub)"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Compensation-and-Development.pdf", "pages": [7] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 7.4 (page 7). Needs the inference that Munich is in Bavaria (Leave and Absence section 4.1, page 5, says so). A negative answer found in one sentence; a model that hedges or says 'not found' is wrong."
+    },
+    {
+      "id": "q49",
+      "question": "Can I smoke on the sidewalk in front of the office?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "No: smoking is allowed only at the designated smoking areas of each site",
+        "Sidewalks and yards in front of the buildings are not permitted (Smoke-Free Policy)"
+      ],
+      "expected_sources": [
+        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [3] },
+        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [2] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "The corpus disagrees with itself. Workplace-Policies section 4.3 (page 5) says you may smoke in designated areas, balconies, open-air verandas and outer premises 'like gardens and sidewalks'. The dedicated Smoke-Free Policy (section 4, page 3) says sidewalks and yards in front of the buildings are not permitted, and the Handbook (section 3.3, page 5) says only the marked areas. A good answer follows the Smoke-Free Policy and ideally mentions that Workplace-Policies says otherwise. Workplace-Policies alone is not an accepted source."
+    },
+    {
+      "id": "q50",
+      "question": "Where am I allowed to smoke at the Frankfurt data center?",
+      "language": "en",
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "Nowhere: smoking is not permitted anywhere on the site"
+      ],
+      "expected_sources": [
+        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [2] },
+        { "file": "Workplace-Policies.pdf", "pages": [5] },
+        { "file": "Employee-Handbook-1.pdf", "pages": [5] }
+      ],
+      "sources_match": "any",
+      "notes": "Last row of the smoking-area table in three files. Smoke-Free (page 2): 'None, no smoking anywhere on the site'. Workplace-Policies (page 5): not permitted on site, including outdoor areas inside the fence. Handbook (page 5): no smoking on site."
+    },
+    {
+      "id": "q51",
+      "question": "Can I wear jeans on Casual Friday?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "Casual Friday applies at Munich HQ and the Berlin office, where jeans are allowed",
+        "Not if you are meeting customers, partners or other external parties that day",
+        "Does not apply at the Garching and Frankfurt sites"
+      ],
+      "expected_sources": [
+        { "file": "Sample_Business_Dress_Code_Policy.pdf", "pages": [3] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 5 (page 3). Three conditions in one passage. No other file mentions Casual Friday. Note the Dress Code Policy has the same document ID (NS-HR-POL-005) as the Employee Handbook."
+    },
+    {
+      "id": "q52",
+      "question": "How much is my yearly learning budget, and does unused budget carry over?",
+      "language": "en",
+      "kind": "single_passage",
+      "expected_found": true,
+      "expected_facts": [
+        "EUR 1,500 per calendar year",
+        "Unused budget is not carried over",
+        "Your line manager approves it, and you claim the costs as an expense in Personio within 30 days"
+      ],
+      "expected_sources": [
+        { "file": "Employee-Compensation-and-Development.pdf", "pages": [6] }
+      ],
+      "sources_match": "any",
+      "notes": "Section 7.1 (page 6). The Handbook (section 5.3, page 7) gives the amount and the manager approval but not the carry-over rule, so a Handbook-only answer misses a required fact."
+    }
+  ]
+}
