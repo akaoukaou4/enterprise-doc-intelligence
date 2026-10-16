@@ -89,6 +89,10 @@ data/**/*.csv
 !data/sample_docs/
 !data/eval/
 
+# Scratch evaluation runs (scripts/evaluate.py writes here). A run worth keeping is moved
+# to data/eval/results/, which is tracked.
+data/eval/runs/
+
 # Fictional AI-generated corpus (see data/corpus/SOURCES.md): committed on purpose
 !data/corpus/*.pdf
 
