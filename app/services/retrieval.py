@@ -10,7 +10,7 @@ from app.services.embeddings import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOP_K = 5
+DEFAULT_TOP_K = 8
 MAX_TOP_K = 20
 MAX_QUESTION_CHARS = 1000
 
