@@ -53,7 +53,7 @@ def test_search_uses_default_top_k() -> None:
 
     _client(service).post("/api/v1/search", json={"question": "anything"})
 
-    assert service.calls == [("anything", 5)]
+    assert service.calls == [("anything", 8)]
 
 
 @pytest.mark.parametrize(
