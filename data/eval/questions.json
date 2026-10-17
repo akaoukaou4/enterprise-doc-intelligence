@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "corpus_dir": "data/corpus",
   "batch": "4 of 4 (all 14 PDFs read)",
   "schema": {
@@ -21,8 +21,18 @@
         "Shred them when they are no longer needed"
       ],
       "expected_sources": [
-        { "file": "Employee-confidentiality-policy.pdf", "pages": [3] },
-        { "file": "Workplace-Policies.pdf", "pages": [2] }
+        {
+          "file": "Employee-confidentiality-policy.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            2
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Workplace-Policies section 2 (page 2, same as the Phase 6 manual run E-1) only says to shred. The Confidentiality Policy (page 3) adds the lockable shredding containers (Datenschutztonnen) at each site and 'do not use ordinary paper bins'. An answer with those details is better but they are not required. No other file mentions shredding."
@@ -38,8 +48,18 @@
         "Report the suspected breach internally immediately (privacy@norvane.example and the IT helpdesk); do not wait until you are sure"
       ],
       "expected_sources": [
-        { "file": "Employee-confidentiality-policy.pdf", "pages": [4] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [4] }
+        {
+          "file": "Employee-confidentiality-policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Confidentiality Policy section 9 (page 4) and Handbook section 3.1 (page 4) both give 72 hours. 'Do not wait until you are sure' is only in the Confidentiality Policy; the Handbook says 'every hour counts'."
@@ -55,7 +75,12 @@
         "Technical details are in NS-IT-POL-001"
       ],
       "expected_sources": [
-        { "file": "Employee-confidentiality-policy.pdf", "pages": [4] }
+        {
+          "file": "Employee-confidentiality-policy.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Row of a table that starts on page 3. The header row (Measure / How we do it / Responsible) is on page 3, so this tests the known header-loss limit (D-12)."
@@ -76,9 +101,24 @@
         "Based on the General Equal Treatment Act (AGG)"
       ],
       "expected_sources": [
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [2] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [3] },
-        { "file": "Employment-Basics.pdf", "pages": [3] }
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Harassment Policy section 1 (page 2), Handbook section 2.2 (page 3) and Employment Basics section 3.1 (page 3) give the list. Employment Basics also names nationality, which the other two do not, so 'nationality' is accepted but not required. Workplace-Policies (page 3) and Compensation (page 2) only mention the AGG, with no list."
@@ -96,8 +136,18 @@
         "Avoid talking to the customer directly about it"
       ],
       "expected_sources": [
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [2] },
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [3] }
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "all",
       "notes": "Section 4 (page 2) and the contact table in section 5 (page 3). Workplace-Policies (page 3) lists only offender, manager and HR and does not say a manager must not ask you to tolerate it, so the Harassment Policy is the full source."
@@ -116,8 +166,18 @@
         "Follow-up conversation about 4 weeks later"
       ],
       "expected_sources": [
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [3] },
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [4] }
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "all",
       "notes": "One table split by a page break: steps 1-2 on page 3, steps 3-5 on page 4. Tests table splitting (D-12)."
@@ -134,19 +194,85 @@
         "Extension 2500"
       ],
       "expected_sources": [
-        { "file": "Employee-confidentiality-policy.pdf", "pages": [5] },
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [3, 4] },
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] },
-        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [5] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [11] },
-        { "file": "Employee-Code-of-Conduct.pdf", "pages": [8] },
-        { "file": "Workplace-Policies.pdf", "pages": [7] },
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [7] },
-        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [8] },
-        { "file": "Employment-Basics.pdf", "pages": [7] },
-        { "file": "Employee-Compensation-and-Development.pdf", "pages": [7] },
-        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [4] },
-        { "file": "Sample_Business_Dress_Code_Policy.pdf", "pages": [3] }
+        {
+          "file": "Employee-confidentiality-policy.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            3,
+            4
+          ]
+        },
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Occupational-_-Workplace-health-and-safety-policy.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            11
+          ]
+        },
+        {
+          "file": "Employee-Code-of-Conduct.pdf",
+          "pages": [
+            8
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "file": "Working-Hours-PTO-and-Vacation.pdf",
+          "pages": [
+            8
+          ]
+        },
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "file": "Employee-Compensation-and-Development.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "file": "Smoke-Free-Workplace-Policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Sample_Business_Dress_Code_Policy.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "The same contact is in 13 of the 14 files on purpose: any of them is correct. Employee-Benefits-and-Perks is the only file without it."
@@ -161,15 +287,60 @@
         "Yes, the Works Council (Betriebsrat) is heard before any termination"
       ],
       "expected_sources": [
-        { "file": "Employee-confidentiality-policy.pdf", "pages": [5] },
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [4] },
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] },
-        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [5] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [10] },
-        { "file": "Workplace-Policies.pdf", "pages": [1] },
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [5] },
-        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [3] },
-        { "file": "Sample_Business_Dress_Code_Policy.pdf", "pages": [3] }
+        {
+          "file": "Employee-confidentiality-policy.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Occupational-_-Workplace-health-and-safety-policy.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            10
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Smoke-Free-Workplace-Policy.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Sample_Business_Dress_Code_Policy.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Confidentiality section 11, Harassment section 8, Substance section 9, Health and Safety section 8, Handbook section 8.3, Workplace-Policies section 1, Resignation section 4.2 step 3 ('no termination is valid without it'), Smoke-Free section 6 and Dress Code section 6. The Code of Conduct (page 5) says only 'involvement of the Works Council as required', so it is not listed."
@@ -185,7 +356,12 @@
         "Also applies when driving to or from a work event"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            2
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Row of the 'Alcohol at a glance' table. Benefits section 7.2 (page 6) only says to drive safely and sober, with no limit, so it is not a source. No other file has a per-mille rule."
@@ -202,7 +378,12 @@
         "A fitness assessment only with a concrete reason (safety-sensitive job) or an unclear workplace accident, by the company physician, with informed consent"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [3] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any"
     },
@@ -218,8 +399,18 @@
         "Tell your manager only that you cannot do certain tasks, or speak to the company physician in confidence"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] },
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [3] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "all",
       "notes": "Section 4 is split by a page break: the first paragraph is on page 2, the rest on page 3. The Handbook (page 5) only says to discuss medication with the company physician, and Workplace-Policies (page 6) says to ask for the rest of the day off, so neither is a source for the 'no need to tell' fact."
@@ -236,7 +427,12 @@
         "A stepwise plan (Stufenplan) may be agreed with the Works Council"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any"
     },
@@ -251,10 +447,30 @@
         "Report promptly: immediately and without waiting to be sure (Confidentiality Policy), or within 24 hours at the latest (Handbook, Benefits and Perks)"
       ],
       "expected_sources": [
-        { "file": "Employee-confidentiality-policy.pdf", "pages": [4] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [6] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
-        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [7] }
+        {
+          "file": "Employee-confidentiality-policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            6
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            8
+          ]
+        },
+        {
+          "file": "Employee-Benefits-and-Perks-1.pdf",
+          "pages": [
+            7
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "German question, English documents. The answer should be in German. The Confidentiality Policy (page 4) also names privacy@norvane.example (ext. 2600). The Handbook (sections 4.2 and 6.6, pages 6 and 8) and Benefits and Perks (section 9.2, page 7) say 24 hours; the Benefits policy and Handbook 6.6 add a police report for theft. The two time limits differ in wording, so accept either."
@@ -273,8 +489,18 @@
         "The manager must not diagnose a cause"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [3] },
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [4] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "all",
       "notes": "French question, English documents, and a list split by a page break (page 3 to 4). The answer should be in French."
@@ -322,11 +548,36 @@
         "The assembly point is parking area P2"
       ],
       "expected_sources": [
-        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [4] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [5] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
-        { "file": "Workplace-Policies.pdf", "pages": [5] },
-        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [7] }
+        {
+          "file": "Occupational-_-Workplace-health-and-safety-policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            8
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Benefits-and-Perks-1.pdf",
+          "pages": [
+            7
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Assembly-point tables in Health and Safety section 5 (page 4), Handbook section 3.3 (page 5) and Workplace-Policies section 4.2 (page 5); parking rows in Handbook 6.5 (page 8) and Benefits section 8 (page 7). Five files, one answer."
@@ -343,9 +594,24 @@
         "To your line manager and the Safety Officer, Carlos Mendes (ext. 2400)"
       ],
       "expected_sources": [
-        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [4] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [5] },
-        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [4] }
+        {
+          "file": "Occupational-_-Workplace-health-and-safety-policy.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Benefits-and-Perks-1.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Health and Safety section 6 (page 4), Handbook section 3.3 (page 5), Benefits section 4 (page 4: 'Near misses and hazards are reported in the same way')."
@@ -360,7 +626,12 @@
         "No: highly dangerous job tasks require at least two employees to be present (no lone working)"
       ],
       "expected_sources": [
-        { "file": "Occupational-_-Workplace-health-and-safety-policy.pdf", "pages": [3] }
+        {
+          "file": "Occupational-_-Workplace-health-and-safety-policy.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "One bullet in section 4.2 (page 3). No other file mentions lone working."
@@ -379,8 +650,18 @@
         "Submit the referral through the Personio referral link before the candidate applies"
       ],
       "expected_sources": [
-        { "file": "Employment-Basics.pdf", "pages": [5] },
-        { "file": "Employment-Basics.pdf", "pages": [6] }
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            6
+          ]
+        }
       ],
       "sources_match": "all",
       "notes": "Employment Basics section 5 is split by a page break: the bonus table and the first rule are on page 5, the other rules and 'How to refer' on page 6. The Handbook (section 2.3, pages 3 and 4) gives an older, shorter version: only EUR 1,500, no priority roles, no 'recruiters' exclusion. A Handbook-only answer is incomplete."
@@ -396,8 +677,18 @@
         "Submit the claim in Personio within 30 days of the expense, with receipts"
       ],
       "expected_sources": [
-        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
-        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [6] }
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            8
+          ]
+        },
+        {
+          "file": "Employee-Benefits-and-Perks-1.pdf",
+          "pages": [
+            6
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Needs a threshold lookup in the table: up to EUR 500 Finance, above EUR 500 line manager, above EUR 5,000 department head. Handbook section 6.3 (page 8) and Benefits section 6.1 (page 6) have the same table."
@@ -413,9 +704,24 @@
         "A doctor's note is needed from the third calendar day of illness (it may be requested earlier)"
       ],
       "expected_sources": [
-        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [6] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [9] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [4] }
+        {
+          "file": "Working-Hours-PTO-and-Vacation.pdf",
+          "pages": [
+            6
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            9
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "German question, English documents. Leave and Absence Policy section 5.1 (page 6, table) and Handbook section 7.4 (page 9) have both facts; Handbook section 2.4 (page 4) and Employment Basics section 6 (page 6) have only the notification time. All say Garching shift staff notify 30 minutes before the shift."
@@ -424,12 +730,29 @@
       "id": "q24",
       "question": "How much severance pay do I get for each year of employment?",
       "language": "en",
-      "kind": "near_miss",
-      "expected_found": false,
-      "expected_facts": [],
-      "expected_sources": [],
+      "kind": "overlap",
+      "expected_found": true,
+      "expected_facts": [
+        "There is generally no automatic entitlement to severance pay",
+        "No formula or amount per year of employment is given; an agreed payment is set out in a settlement or termination agreement",
+        "Larger restructurings get a social plan (Sozialplan) agreed with the Works Council"
+      ],
+      "expected_sources": [
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            10
+          ]
+        },
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            5
+          ]
+        }
+      ],
       "sources_match": "any",
-      "notes": "Handbook section 8.3 (page 10) and Resignation section 4.4 (page 5) say there is generally no automatic entitlement to severance pay; an agreed payment is set out in a settlement or termination agreement, and larger restructurings get a social plan (Sozialplan) with the Works Council. No file gives a formula or amount. Acceptable: says that, with no figure."
+      "notes": "Near-miss trap kept as an answerable question: the question assumes a per-year formula, but Handbook section 8.3 (page 10) and Resignation section 4.4 (page 5) say there is generally no automatic entitlement; an agreed payment is set out in a settlement or termination agreement, and larger restructurings get a social plan (Sozialplan) with the Works Council. No file gives a formula or amount. A correct answer says that and gives no figure; an invented figure is wrong (hand review, the metrics cannot see it). Relabelled in version 5 (it was a refusal question in version 4)."
     },
     {
       "id": "q25",
@@ -442,7 +765,12 @@
         "Never accept cash or anything offered in exchange for a decision"
       ],
       "expected_sources": [
-        { "file": "Employee-Code-of-Conduct.pdf", "pages": [5] }
+        {
+          "file": "Employee-Code-of-Conduct.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Row of the conflict-of-interest table in section 4. Needs a threshold comparison (80 > 50). No other file covers gifts from suppliers (Compensation page 3 mentions only an anniversary gift from the Managing Directors)."
@@ -460,7 +788,12 @@
         "Visitors are escorted at all times"
       ],
       "expected_sources": [
-        { "file": "Employee-Code-of-Conduct.pdf", "pages": [7] }
+        {
+          "file": "Employee-Code-of-Conduct.pdf",
+          "pages": [
+            7
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "The Frankfurt row is on page 7, but the table header row (Site / Visitors register at / Register in advance / Additional rules) and the Munich and Berlin rows are on page 6, so this tests the header-loss limit (D-12). Handbook section 4.6 (page 6) says only that the data center needs approval from the CISO or the COO, so it is not a full source."
@@ -476,8 +809,18 @@
         "Conditions: keep your account safe, avoid spamming, do not disclose confidential information (and it must not interfere with work or security)"
       ],
       "expected_sources": [
-        { "file": "Employee-Code-of-Conduct.pdf", "pages": [3] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [6] }
+        {
+          "file": "Employee-Code-of-Conduct.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            6
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Spanish question, English documents. The Code of Conduct (section 3.3, page 3) has the conditions; the Handbook (section 4.2, page 6) says private use is tolerated if it does not interfere with work or security."
@@ -495,7 +838,12 @@
         "No alcohol before or during safety-sensitive work"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            2
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "The 'Alcohol at a glance' table on page 2 is the specific rule. Two other files say less: Handbook section 3.3 (page 5) allows alcohol only at company events approved by the Managing Directors, and Workplace-Policies section 4.4 (page 6) allows moderate drinking at company events and bans it during working hours. The Handbook (page 2) says the specific policy applies when they differ, so a good answer follows the Substance Abuse Policy. A summary that says alcohol is allowed only at MD-approved events loses points."
@@ -511,7 +859,12 @@
         "This longer period applies to termination by the company only (statutory extension)"
       ],
       "expected_sources": [
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [4] }
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Row 'Termination by the company after 12 / 15 / 20 years of service: 5 / 6 / 7 months' in the notice table (section 3.2). Needs a lookup (12 years = 5 months). The Handbook (page 10) and Employment Basics (page 3) list only the 2 weeks and 3 months rows, so an answer based on them alone is wrong."
@@ -527,9 +880,24 @@
         "During probation (first 6 months) it is 2 weeks"
       ],
       "expected_sources": [
-        { "file": "Employee-Handbook-1.pdf", "pages": [10] },
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [4] },
-        { "file": "Employment-Basics.pdf", "pages": [3] }
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            10
+          ]
+        },
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Handbook section 8.2 (page 10), Resignation section 3.2 (page 4) and Employment Basics section 2.4 (page 3) give the same two rows. The Resignation table adds longer company-only periods, which do not apply to a resignation."
@@ -546,7 +914,12 @@
         "4 formal disciplinary meeting (transfer of tasks or other measures within the contract), 5 final written warning (letzte Abmahnung), 6 termination after the Works Council hearing"
       ],
       "expected_sources": [
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [2] }
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            2
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Six-row table in section 2.1. The Handbook (section 8.1, page 10) describes a shorter version (discuss, then a formal written warning, then termination), so a Handbook-only answer misses the six steps."
@@ -561,11 +934,36 @@
         "Termination of employment is a consequence or a possible consequence, in serious cases even without notice"
       ],
       "expected_sources": [
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [2] },
-        { "file": "Workplace-harassment-policy-sample.pdf", "pages": [4] },
-        { "file": "Workplace-Policies.pdf", "pages": [3] },
-        { "file": "Workplace-Policies.pdf", "pages": [6] },
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [3] }
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Workplace-harassment-policy-sample.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            6
+          ]
+        },
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "The files differ in strength. Harassment Policy: serious disciplinary action up to and including termination (page 2); termination without notice may be justified (page 4). Workplace-Policies: they will be terminated (pages 3 and 6). Resignation section 2.2 (page 3): entry at step 5 (final written warning), or termination without warning if trust is irreparably destroyed. All agree that termination is possible, which is the required fact. A good answer does not claim more certainty than its sources."
@@ -581,7 +979,12 @@
         "3 days for an extraordinary (immediate) termination"
       ],
       "expected_sources": [
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [5] }
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "A table cell in section 4.2 (step 3, Timing column). The row text wraps over five lines, which tests table flattening. No other file gives the response time."
@@ -597,7 +1000,12 @@
         "Within 3 months"
       ],
       "expected_sources": [
-        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [3] }
+        {
+          "file": "Working-Hours-PTO-and-Vacation.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Needs a range lookup in the flexitime table (section 2.5). Neighbouring rows: up to +40 free to use, above +60 not credited without written approval. No other file gives these limits."
@@ -612,7 +1020,12 @@
         "International Women's Day (08.03.)"
       ],
       "expected_sources": [
-        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [5] }
+        {
+          "file": "Working-Hours-PTO-and-Vacation.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Needs a column scan of the holiday table in section 4.1 (Munich/Garching, Berlin, Frankfurt): only Berlin has 'Yes' for International Women's Day. The Handbook (page 9) only says Berlin follows Berlin holidays. The table's last row gives the totals: 13, 10, 10."
@@ -629,7 +1042,12 @@
         "Inform HR at least 3 months before the expected date where possible"
       ],
       "expected_sources": [
-        { "file": "Working-Hours-PTO-and-Vacation.pdf", "pages": [8] }
+        {
+          "file": "Working-Hours-PTO-and-Vacation.pdf",
+          "pages": [
+            8
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 7.2 (page 8). The Handbook (page 10, section 7.6) does not mention partner leave."
@@ -646,7 +1064,12 @@
         "The employer adds the statutory subsidy of 15 percent of the converted amount"
       ],
       "expected_sources": [
-        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [3] }
+        {
+          "file": "Employee-Benefits-and-Perks-1.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 3.2 (page 3). The Handbook (page 7) only says 'employer-funded company pension scheme after probation', with no amount, so a Handbook-only answer is incomplete. Compensation and Employment Basics do not mention the pension."
@@ -662,8 +1085,18 @@
         "Maximum 20 working days per calendar year"
       ],
       "expected_sources": [
-        { "file": "Employee-Handbook-1.pdf", "pages": [8] },
-        { "file": "Employee-Benefits-and-Perks-1.pdf", "pages": [5] }
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            8
+          ]
+        },
+        {
+          "file": "Employee-Benefits-and-Perks-1.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Handbook section 6.2 (page 8, a paragraph) and Benefits section 5.2 (page 5, a table row) say the same."
@@ -679,10 +1112,30 @@
         "Legal use in private life under the Cannabis Act (KCanG) does not change this"
       ],
       "expected_sources": [
-        { "file": "Substance-abuse-company-policy.pdf", "pages": [2] },
-        { "file": "Workplace-Policies.pdf", "pages": [5] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [5] },
-        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [2] }
+        {
+          "file": "Substance-abuse-company-policy.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Smoke-Free-Workplace-Policy.pdf",
+          "pages": [
+            2
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Substance Abuse section 3 (page 2), Smoke-Free section 2 (page 2), Workplace-Policies section 4.4 (page 5) and Handbook section 3.3 (page 5). Only the last two say it is legal in private life under the KCanG; Smoke-Free and Substance Abuse refer to the Act without saying that."
@@ -699,7 +1152,12 @@
         "May provide the company lawyer's services to help file lawsuits"
       ],
       "expected_sources": [
-        { "file": "Workplace-Policies.pdf", "pages": [4] }
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 3.3 (page 4), three bullets after a page break from the start of the violence section. The Harassment Policy does not list these measures."
@@ -716,7 +1174,12 @@
         "Repayment clauses are agreed individually before the costs are incurred and must be reasonable (HR checks with Legal)"
       ],
       "expected_sources": [
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [4] }
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            4
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 3.4 (page 4). The Handbook (page 10) says only that the terms in your signed agreement apply, with no formula. Compensation section 7.1 (page 6) adds that a repayment agreement may be asked for external training above EUR 3,000, and points to this section, but gives no formula."
@@ -733,8 +1196,18 @@
         "Send the signed notice to HR (hr@norvane.example)"
       ],
       "expected_sources": [
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [2] },
-        { "file": "Employee-Resignation-and-Termination.pdf", "pages": [3] }
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Employee-Resignation-and-Termination.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "A yes/no question answered by inference: the 'emails are not valid' sentence is in section 1 (page 2), the signed-by-hand notice to HR in section 3.1 (page 3). The Handbook (page 10) says only 'in writing, signed', so it does not settle email."
@@ -772,7 +1245,12 @@
         "Otherwise EUR 1,500 (standard roles)"
       ],
       "expected_sources": [
-        { "file": "Employment-Basics.pdf", "pages": [5] }
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "The corpus disagrees with itself here. The Handbook (section 2.3, page 3, version 1.2 of 01.01.2026) says a flat EUR 1,500. Employment Basics (section 5, page 5, version 1.3 of 01.03.2026) added the priority roles list with EUR 3,000, and the Handbook (page 2) says the specific policy applies when they differ. An answer that says only EUR 1,500 is wrong."
@@ -788,7 +1266,12 @@
         "The offer is made only after the Works Council has responded or the legal period of one week has expired"
       ],
       "expected_sources": [
-        { "file": "Employment-Basics.pdf", "pages": [5] }
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 4.3 (page 5; step 12 of the process table is on the same page). Easy to confuse with the dismissal questions q08 and q33, which are about termination, not hiring. The Handbook's recruitment table (page 3) has no Works Council step."
@@ -805,7 +1288,12 @@
         "HR, not the hiring manager, views it, records only that it was checked, and keeps no copy"
       ],
       "expected_sources": [
-        { "file": "Employment-Basics.pdf", "pages": [5] }
+        {
+          "file": "Employment-Basics.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 4.5 (page 5). The Handbook (section 2.3, page 3, step 5) covers only the certificate and the offer-stage rule, not social media or who sees it, so a Handbook-only answer is partial."
@@ -821,7 +1309,12 @@
         "A statutory right to educational leave exists only in Berlin (Bildungszeit) and Hesse (Bildungsurlaub)"
       ],
       "expected_sources": [
-        { "file": "Employee-Compensation-and-Development.pdf", "pages": [7] }
+        {
+          "file": "Employee-Compensation-and-Development.pdf",
+          "pages": [
+            7
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 7.4 (page 7). Needs the inference that Munich is in Bavaria (Leave and Absence section 4.1, page 5, says so). A negative answer found in one sentence; a model that hedges or says 'not found' is wrong."
@@ -837,9 +1330,24 @@
         "Sidewalks and yards in front of the buildings are not permitted (Smoke-Free Policy)"
       ],
       "expected_sources": [
-        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [3] },
-        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [2] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [5] }
+        {
+          "file": "Smoke-Free-Workplace-Policy.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "file": "Smoke-Free-Workplace-Policy.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "The corpus disagrees with itself. Workplace-Policies section 4.3 (page 5) says you may smoke in designated areas, balconies, open-air verandas and outer premises 'like gardens and sidewalks'. The dedicated Smoke-Free Policy (section 4, page 3) says sidewalks and yards in front of the buildings are not permitted, and the Handbook (section 3.3, page 5) says only the marked areas. A good answer follows the Smoke-Free Policy and ideally mentions that Workplace-Policies says otherwise. Workplace-Policies alone is not an accepted source."
@@ -854,9 +1362,24 @@
         "Nowhere: smoking is not permitted anywhere on the site"
       ],
       "expected_sources": [
-        { "file": "Smoke-Free-Workplace-Policy.pdf", "pages": [2] },
-        { "file": "Workplace-Policies.pdf", "pages": [5] },
-        { "file": "Employee-Handbook-1.pdf", "pages": [5] }
+        {
+          "file": "Smoke-Free-Workplace-Policy.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "file": "Workplace-Policies.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "file": "Employee-Handbook-1.pdf",
+          "pages": [
+            5
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Last row of the smoking-area table in three files. Smoke-Free (page 2): 'None, no smoking anywhere on the site'. Workplace-Policies (page 5): not permitted on site, including outdoor areas inside the fence. Handbook (page 5): no smoking on site."
@@ -873,7 +1396,12 @@
         "Does not apply at the Garching and Frankfurt sites"
       ],
       "expected_sources": [
-        { "file": "Sample_Business_Dress_Code_Policy.pdf", "pages": [3] }
+        {
+          "file": "Sample_Business_Dress_Code_Policy.pdf",
+          "pages": [
+            3
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 5 (page 3). Three conditions in one passage. No other file mentions Casual Friday. Note the Dress Code Policy has the same document ID (NS-HR-POL-005) as the Employee Handbook."
@@ -890,7 +1418,12 @@
         "Your line manager approves it, and you claim the costs as an expense in Personio within 30 days"
       ],
       "expected_sources": [
-        { "file": "Employee-Compensation-and-Development.pdf", "pages": [6] }
+        {
+          "file": "Employee-Compensation-and-Development.pdf",
+          "pages": [
+            6
+          ]
+        }
       ],
       "sources_match": "any",
       "notes": "Section 7.1 (page 6). The Handbook (section 5.3, page 7) gives the amount and the manager approval but not the carry-over rule, so a Handbook-only answer misses a required fact."
