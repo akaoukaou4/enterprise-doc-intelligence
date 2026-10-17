@@ -19,7 +19,7 @@ from app.evaluation.metrics import (
     sources_satisfied,
 )
 from app.evaluation.questions import EvalQuestion
-from app.services.retrieval import MAX_TOP_K
+from app.services.retrieval import DEFAULT_TOP_K, MAX_TOP_K
 
 if TYPE_CHECKING:
     from app.services.rag import RagService
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 SEARCH_K = MAX_TOP_K
 # Retrieved chunks kept in the result file (the largest cut-off in HIT_KS).
 RECORDED_CHUNKS = 10
+# Characters of each retrieved chunk kept in the result file, so a reader can see what was shown.
+EXCERPT_CHARS = 300
 # Free tier of gemini-3.5-flash-lite: 15 requests per minute (docs/provider_limits.md).
 # One call every 5 s is 12 per minute, leaving room for other calls on the same project.
 MIN_SECONDS_BETWEEN_CALLS = 5.0
@@ -63,6 +65,7 @@ def evaluate_question(
     retrieval: "RetrievalService",
     rag: "RagService | None",
     pacer: Pacer,
+    top_k: int = DEFAULT_TOP_K,
 ) -> QuestionResult:
     chunks = retrieval.search(question.question, SEARCH_K)
     rank = satisfied_rank(question, chunks) if question.expected_found else None
@@ -73,6 +76,7 @@ def evaluate_question(
             heading=chunk.heading,
             similarity=round(chunk.similarity, 4),
             matches_expected=is_expected_ref(question, chunk),
+            excerpt=" ".join(chunk.text.split())[:EXCERPT_CHARS],
         )
         for chunk in chunks[:RECORDED_CHUNKS]
     )
@@ -82,7 +86,7 @@ def evaluate_question(
     if rag is not None:
         pacer.wait()
         try:
-            reply = rag.ask(question.question)
+            reply = rag.ask(question.question, top_k=top_k)
         except ExternalServiceError as exc:
             # The message is generic by design (D-30); details are in the server log.
             error = f"{type(exc).__name__}: {exc}"
@@ -121,6 +125,7 @@ def run_evaluation(
     rag: "RagService | None",
     on_result: Callable[[QuestionResult], None],
     pacer: Pacer | None = None,
+    top_k: int = DEFAULT_TOP_K,
 ) -> bool:
     """Evaluate every question in order, reporting each result as soon as it exists.
 
@@ -131,7 +136,7 @@ def run_evaluation(
     pacer = pacer or Pacer()
     failures_in_a_row = 0
     for question in questions:
-        result = evaluate_question(question, retrieval, rag, pacer)
+        result = evaluate_question(question, retrieval, rag, pacer, top_k)
         on_result(result)
         failures_in_a_row = failures_in_a_row + 1 if result.error else 0
         if failures_in_a_row >= MAX_CONSECUTIVE_ERRORS:

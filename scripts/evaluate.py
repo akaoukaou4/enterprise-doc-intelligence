@@ -4,6 +4,7 @@
     uv run python -m scripts.evaluate                     # full run: also asks Gemini (paced)
     uv run python -m scripts.evaluate --label baseline    # adds a label to the file name
     uv run python -m scripts.evaluate --only q01,q05      # a few questions, for debugging
+    uv run python -m scripts.evaluate --top-k 8           # answer with 8 chunks (default 5)
 
 Writes data/eval/runs/<time>-<mode>[-label].json (every question, every number; rewritten
 after each question so a stop loses nothing) and, in full mode, a .review.md sheet to
@@ -37,7 +38,7 @@ from app.evaluation.runner import MIN_SECONDS_BETWEEN_CALLS, SEARCH_K, run_evalu
 from app.services.embeddings import EmbeddingService
 from app.services.llm import LlmService
 from app.services.rag import RagService
-from app.services.retrieval import DEFAULT_TOP_K, RetrievalService
+from app.services.retrieval import DEFAULT_TOP_K, MAX_TOP_K, RetrievalService
 
 DEFAULT_QUESTIONS = Path("data/eval/questions.json")
 DEFAULT_OUT_DIR = Path("data/eval/runs")
@@ -68,8 +69,10 @@ def select_questions(all_questions: list[EvalQuestion], only: str | None) -> lis
     return [question for question in all_questions if question.id in wanted]
 
 
-def write_run(path: Path, meta: dict[str, Any], results: list[QuestionResult]) -> dict[str, Any]:
-    summary = summarize(results, DEFAULT_TOP_K)
+def write_run(
+    path: Path, meta: dict[str, Any], results: list[QuestionResult], top_k: int
+) -> dict[str, Any]:
+    summary = summarize(results, top_k)
     document = {"run": meta, "summary": summary, "results": [asdict(r) for r in results]}
     path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
     return summary
@@ -96,10 +99,19 @@ def main() -> None:
     parser.add_argument("--retrieval-only", action="store_true", help="skip Gemini")
     parser.add_argument("--label", help="added to the file name, for example baseline")
     parser.add_argument("--only", help="comma-separated question ids")
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=DEFAULT_TOP_K,
+        help=f"chunks given to the model, 1 to {MAX_TOP_K} (default {DEFAULT_TOP_K}); "
+        "an experiment setting, the API default is not changed",
+    )
     args = parser.parse_args()
 
     if args.label and not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
         raise SystemExit("--label may contain only letters, digits, '-' and '_'.")
+    if not 1 <= args.top_k <= MAX_TOP_K:
+        raise SystemExit(f"--top-k must be between 1 and {MAX_TOP_K}.")
 
     data = json.loads(args.questions.read_text(encoding="utf-8"))
     questions = select_questions(parse_questions(data), args.only)
@@ -124,7 +136,7 @@ def main() -> None:
             "questions": len(questions),
             "chunks_in_database": chunk_count,
             "search_k": SEARCH_K,
-            "answer_top_k": DEFAULT_TOP_K,
+            "answer_top_k": args.top_k,
             "embedding_model": settings.embedding_model_id,
             "gemini_model": None if args.retrieval_only else settings.gemini_model,
             "seconds_between_gemini_calls": (
@@ -143,14 +155,14 @@ def main() -> None:
 
         def on_result(result: QuestionResult) -> None:
             results.append(result)
-            write_run(run_path, meta, results)
+            write_run(run_path, meta, results, args.top_k)
             print(progress_line(len(results), len(questions), result), flush=True)
 
         t0 = time.perf_counter()
-        completed = run_evaluation(questions, retrieval, rag, on_result)
+        completed = run_evaluation(questions, retrieval, rag, on_result, top_k=args.top_k)
         elapsed = time.perf_counter() - t0
 
-    summary = write_run(run_path, meta, results)
+    summary = write_run(run_path, meta, results, args.top_k)
     print(f"\nFinished in {elapsed:.0f} s. Results: {run_path}")
     if not args.retrieval_only:
         review_path = run_path.with_suffix(".review.md")

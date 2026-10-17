@@ -25,13 +25,15 @@ class PageRef(Protocol):
 
 @dataclass(frozen=True)
 class RetrievedRef:
-    """A retrieved chunk without its text."""
+    """A retrieved chunk: where it is, how close it was, and the start of its text."""
 
     filename: str
     page_numbers: tuple[int, ...]
     heading: str | None
     similarity: float
     matches_expected: bool
+    # The first characters of the chunk text, on one line, so a reader can see what was shown.
+    excerpt: str = ""
 
 
 @dataclass(frozen=True)

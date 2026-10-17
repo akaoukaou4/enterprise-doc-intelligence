@@ -29,13 +29,13 @@ def make_question(qid="q1", found=True, file="a.pdf", pages=(3,)) -> EvalQuestio
     )
 
 
-def chunk(filename, pages, similarity=0.5) -> RetrievedChunk:
+def chunk(filename, pages, similarity=0.5, text="text") -> RetrievedChunk:
     return RetrievedChunk(
         document_id=uuid.uuid4(),
         filename=filename,
         page_numbers=list(pages),
         heading=None,
-        text="text",
+        text=text,
         similarity=similarity,
     )
 
@@ -54,9 +54,11 @@ class FakeRag:
     def __init__(self, outcomes) -> None:
         self.outcomes = list(outcomes)
         self.asked: list[str] = []
+        self.top_ks: list[int] = []
 
-    def ask(self, question):
+    def ask(self, question, top_k=5):
         self.asked.append(question)
+        self.top_ks.append(top_k)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -105,6 +107,25 @@ def test_full_mode_records_the_answer_and_checks_its_citations() -> None:
     assert result.answer.text == "the answer"
     assert result.answer.sources_satisfied is True
     assert result.answer.citations[0].matches_expected is True
+
+
+def test_top_k_is_passed_to_the_model() -> None:
+    retrieval = FakeRetrieval([chunk("a.pdf", [3])])
+    rag = FakeRag([answer()])
+
+    evaluate_question(make_question(), retrieval, rag, CountingPacer(), top_k=8)
+
+    assert rag.top_ks == [8]
+
+
+def test_excerpt_is_one_short_line() -> None:
+    retrieval = FakeRetrieval([chunk("a.pdf", [3], text="word\n" * 500)])
+
+    result = evaluate_question(make_question(), retrieval, None, CountingPacer())
+
+    excerpt = result.retrieved[0].excerpt
+    assert "\n" not in excerpt
+    assert len(excerpt) <= 300
 
 
 def test_a_citation_outside_the_expected_list_is_marked() -> None:
