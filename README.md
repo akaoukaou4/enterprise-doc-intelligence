@@ -72,7 +72,7 @@ The token is saved under `HF_HOME`, outside the repository. Never put it in `.en
 3. Optional: choose another model with `GEMINI_MODEL`.
 4. Check the connection (two real calls, using a fictional café as the document): `uv run python -m scripts.smoke_gemini`
 
-**Privacy:** on the free tier, Google may use prompts and responses to improve its products. Send only fictional, openly licensed or non-sensitive documents through `/ask`. Quotas and the current default model: [DECISIONS.md](DECISIONS.md) (D-28, D-36). Only `/ask` calls Gemini; upload, ingestion and `/search` do not.
+**Privacy:** on the free tier, Google may use prompts and responses to improve its products. Send only fictional, openly licensed or non-sensitive documents through `/ask`. Quotas and the current default model: [DECISIONS.md](DECISIONS.md) (D-28, D-36) and `docs/provider_limits.md`. Only `/ask` calls Gemini; upload, ingestion and `/search` do not.
 
 ### Where the caches go (recommended on Windows)
 
@@ -105,13 +105,22 @@ uv run python -m scripts.ingest_document <document_id>
 
 It reads the PDF from MinIO, processes it, embeds the chunks and stores them. Running it again replaces the document's chunks. Nothing is sent to Gemini. On a CPU a short PDF takes a few minutes, and the first run also loads the models.
 
+To upload and ingest a whole folder (for example the corpus), look at what it would do first, then run it. A document that is already ingested is skipped, so it is safe to repeat. The 14 corpus files take about half an hour on a CPU:
+
+```powershell
+uv run python -m scripts.ingest_folder data/corpus
+uv run python -m scripts.ingest_folder data/corpus --run
+```
+
 ### 3. Ask a question
 
 In `/docs`, expand `POST /api/v1/ask` and send:
 
 ```json
-{"question": "How many vacation days do employees get per year?", "top_k": 5}
+{"question": "How many vacation days do employees get per year?", "top_k": 8}
 ```
+
+`top_k` is optional (1 to 20, default 8).
 
 The response:
 
@@ -123,7 +132,7 @@ From PowerShell (the question is sent as UTF-8 so accents survive):
 
 ```powershell
 function Ask($q) {
-  $body = @{ question = $q; top_k = 5 } | ConvertTo-Json
+  $body = @{ question = $q; top_k = 8 } | ConvertTo-Json
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
   $r = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/ask -ContentType "application/json; charset=utf-8" -Body $bytes
   "found: $($r.found)"
@@ -157,6 +166,18 @@ uv run python scripts/explore_docling.py "data/sample_docs/your.pdf"
 
 The first prints the chunks with their pages and headings, without storing anything. The second shows what Docling itself produces (output saved in `data/sample_docs/output/`).
 
+## Evaluate
+
+The repository includes a 52-question evaluation set for the corpus (`data/eval/questions.json`) and a runner. PostgreSQL must be running and the corpus ingested.
+
+```powershell
+uv run python -m scripts.evaluate --retrieval-only       # no Gemini calls, about 1 to 3 minutes
+uv run python -m scripts.evaluate --label mytest          # full run, about 6 minutes (paced for the free tier)
+uv run python -m scripts.evaluate --only q07 --top-k 5    # one question, another answer size
+```
+
+Results go to `data/eval/runs/` (git-ignored). A full run also writes a `.review.md` file: read the answers and fill in the verdicts. Kept results and what they mean: [DECISIONS.md](DECISIONS.md) (E-4). A full run uses about 52 of the 500 free Gemini requests of a day.
+
 ## Development
 
 ```powershell
@@ -171,11 +192,11 @@ Unit tests use fakes: no Docling or embedding model, no database, and they never
 
 * Text and tables inside embedded images are unreliable; a table can lose its header row or split across chunks.
 * Some section headings are wrong or missing, so the page number is the most reliable part of a citation.
-* There is no similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation.
-* Citation precision (an answer citing more sources than it needs) is not measured yet.
+* There is no similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation. On the evaluation set it refused every question the documents cannot answer.
+* An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (DECISIONS, E-4).
 * No list or delete endpoint for documents, and upload does not trigger ingestion.
 
-How these will be measured and addressed: [ROADMAP.md](ROADMAP.md) (evaluation phase).
+Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4) and the backlog in [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 

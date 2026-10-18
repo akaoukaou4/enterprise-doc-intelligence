@@ -3,7 +3,7 @@
 **Question this file answers:** how does the system work **today**?
 **Not here:** the plan (ROADMAP), the reasons behind choices (DECISIONS), how to run it (README), scope (PROJECT).
 
-Written in the present tense. If something is not built yet, it is listed once in section 13 and nowhere else. Status as of the end of Phase 6 (2026-10-13).
+Written in the present tense. If something is not built yet, it is listed once in section 13 and nowhere else. Status as of the end of Phase 7 (2026-10-18).
 
 ---
 
@@ -53,8 +53,12 @@ These **invariants** must hold in every change. A change that breaks one needs a
                           (S3 on AWS)
 
    Ingestion (run by hand today):
-   scripts/ingest_document.py <document_id>
+   scripts/ingest_document.py <document_id>   scripts/ingest_folder.py <folder>
+     both call IngestionService:
      MinIO ─► process_pdf (Docling) ─► EmbeddingService ─► ChunkService ─► document_chunks
+
+   Evaluation (run by hand):
+   scripts/evaluate.py ─► RetrievalService (+ RagService in full mode) ─► data/eval/runs/*.json
 ```
 
 Docker Compose runs PostgreSQL (`pgvector/pgvector:pg18`, host port 5433) and MinIO (ports 9000 and 9001) plus a one-time `minio-init` container that creates the `documents` bucket. The API, the pipeline and the embedding model run on the host.
@@ -72,15 +76,17 @@ app/
 │   └── v1/              router.py, info.py, documents.py, search.py, ask.py
 ├── core/                config.py (Settings), logging.py, errors.py
 ├── db/                  base.py, models.py (Document, DocumentChunk), session.py
-├── services/            documents, storage, embeddings, chunks, retrieval, llm, rag_prompt, rag, info
+├── services/            documents, storage, embeddings, chunks, retrieval, llm, rag_prompt, rag, ingestion, info
+├── evaluation/          questions, metrics, runner, report (scoring and reports; no database or model code)
 ├── pipeline/            models.py (Chunk), extract.py, chunk.py, clean.py, process.py
 └── schemas/             health, errors, info, documents, search, ask
 migrations/              Alembic (env.py reads the URL from Settings); versions/ excluded from Ruff
-scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, smoke_gemini
+scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, ingest_folder, smoke_gemini, evaluate
 tests/unit/              fakes; run everywhere including CI
 tests/integration/       real PostgreSQL and MinIO; skip themselves when unavailable
 data/corpus/             the fictional test corpus (14 policy PDFs, committed; origin in SOURCES.md)
-data/eval/               evaluation sets (Phase 7); other PDFs under data/ and data/sample_docs/output/ are git-ignored
+data/eval/               questions.json (the evaluation set), results/ (kept runs), runs/ (scratch, git-ignored); other PDFs under data/ and data/sample_docs/output/ are git-ignored
+docs/                    provider_limits.md (free-tier limits of the LLM, with the date they were checked)
 ui/                      reserved for the Streamlit UI (Phase 9)
 ```
 
@@ -109,7 +115,7 @@ There is no list or delete endpoint for documents, and upload does not start ing
 
 **Errors.** Every error has one shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`); registered handlers convert them. FastAPI's own errors (unknown URL, invalid input) use the same shape. Unexpected exceptions return a generic message and are logged in full on the server.
 
-**Search and ask routes** are plain `def`, so FastAPI runs the blocking model and network work in a thread pool. Request: `{question, top_k}`; the question is stripped and must be 1 to 1000 characters; `top_k` is 1 to 20 (default 5). Invalid input returns `422`. The schemas import the limits from the retrieval service, so they are defined once.
+**Search and ask routes** are plain `def`, so FastAPI runs the blocking model and network work in a thread pool. Request: `{question, top_k}`; the question is stripped and must be 1 to 1000 characters; `top_k` is 1 to 20 (default 8). Invalid input returns `422`. The schemas import the limits from the retrieval service, so they are defined once.
 
 ---
 
@@ -132,7 +138,7 @@ document_chunks
 
 - Cascade delete leaves no orphan chunks. The unique constraint prevents duplicates when a document is processed twice.
 - `vector(768)` and `NOT NULL` make the database reject missing or wrong-sized vectors.
-- There is no vector index (HNSW or IVFFlat). An exact scan is instant at this size.
+- There is no vector index (HNSW or IVFFlat). An exact scan is instant at this size (302 chunks).
 - The SQLAlchemy engine is created lazily with `pool_pre_ping`, so the app starts without a database and recovers after a database restart. `DATABASE_URL` is optional in Settings so tests and CI run without one.
 
 ---
@@ -152,7 +158,7 @@ POST /api/v1/documents (multipart file)
 
 ### 6.2 Ingestion (direct mode, by hand)
 
-`uv run python -m scripts.ingest_document <document_id>` chains: download from storage ─► `process_pdf` ─► `EmbeddingService.embed_documents` ─► `ChunkService.replace_chunks`. Airflow will call the same functions (Phase 8). It does not change `documents.status`.
+`uv run python -m scripts.ingest_document <document_id>` ingests one stored document. `uv run python -m scripts.ingest_folder` uploads and ingests every PDF of a folder (a dry run unless `--run`; a document that already has chunks is skipped; one failure does not stop the batch). Both call `IngestionService` (`app/services/ingestion.py`): download from storage ─► `process_pdf` ─► `EmbeddingService.embed_documents` ─► `ChunkService.replace_chunks`. Airflow will call the same service (Phase 8). It does not change `documents.status`.
 
 ### 6.3 Search
 
@@ -197,15 +203,15 @@ PDF ─► extract (Docling, converter created once and cached)
 
 `process_pdf(path)` runs these three stages. It does no storage or database work (I1). `clean.py` is pure. `chunk_document` accepts a chunker, so tests use fake chunks without any model. Each cleaning rule exists because real PDFs contained that junk.
 
-**Known limits** (documented, not fixed; Phase 7 decides whether they matter):
+**Known limits** (documented, not fixed; Phase 7 found no measurable harm, DECISIONS D-12):
 - Text and tables inside pictures are unreliable.
 - Docling reports every heading as level 1, so only the nearest heading is kept; some headings are wrong or missing.
-- A table can lose its header row and can be split across chunks without its caption.
+- A table can lose its header row and can be split across chunks without its caption. Tables are stored as sentences ("Contact = X. Email = Y. Ext. = Z").
 - Front-matter chunks (title blocks, author lists) can carry a wrong heading.
 - Some chunks are only a heading plus a line or two of text and can take a result slot.
 - Reference lists (bibliographies) can rank in results as noise.
 
-**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes.
+**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes (the 11 remaining corpus files took about 18 minutes together).
 
 ---
 
@@ -235,9 +241,13 @@ PDF ─► extract (Docling, converter created once and cached)
 
 **`RagService` (`app/services/rag.py`)** orchestrates section 6.4 and returns `RagAnswer(answer, found, citations)`, where `Citation` is `(document_id, filename, page_numbers, heading, text)`.
 
-**Refusal has three layers:** no retrieved chunks (Gemini is not called); the model answers `found: false`; or the model claims `found: true` without a valid citation. There is **no similarity threshold**, because the measured scores separate on one corpus and not on another (see DECISIONS). A citation proves the chunk was retrieved, not that it supports every claim; citation precision is not measured yet.
+**Refusal has three layers:** no retrieved chunks (Gemini is not called); the model answers `found: false`; or the model claims `found: true` without a valid citation. There is **no similarity threshold**, because the measured scores do not separate answerable questions from near-misses (DECISIONS D-33, E-4). A citation proves the chunk was retrieved, not that it supports every claim; citation precision is measured by the evaluation (section 9.1).
 
 A citation page range can span pages. The page number is the reliable part of a citation; the section label is a hint (headings can be wrong, section 7).
+
+### 9.1 Evaluation (`app/evaluation/`, `scripts/evaluate.py`)
+
+`scripts/evaluate.py` runs `data/eval/questions.json` against the real services (not over HTTP) and writes `data/eval/runs/<time>-<mode>[-label].json` after every question, plus a `.review.md` sheet for hand review in full mode. Flags: `--retrieval-only` (no Gemini), `--label`, `--only q01,q05`, `--top-k N` (an experiment setting; the API default is not changed). `questions.py` validates the question file, `metrics.py` holds the pure scoring (hit at k, MRR, citation coverage, padding, precision), `runner.py` does one search of 20 per question and, in full mode, one paced Gemini call, and `report.py` formats the console summary and the review sheet. Each recorded chunk keeps a 300-character excerpt. The console shows ids and numbers, never question text (I9). Why it is built this way, and its limits: DECISIONS D-41. Results: E-4.
 
 ---
 
@@ -260,7 +270,7 @@ One typed `Settings` object (`app/core/config.py`) reads environment variables a
 | Embeddings | `EMBEDDING_MODEL_ID` (has a default) |
 | LLM | `GEMINI_API_KEY` (secret), `GEMINI_MODEL` (has a default) |
 
-The search limits (`DEFAULT_TOP_K`, `MAX_TOP_K`, `MAX_QUESTION_CHARS`) are constants in `retrieval.py`, not settings: they are tuned with evaluation data, not per environment. The Hugging Face token is not a setting: it is stored by `hf auth login`, or supplied as `HF_TOKEN` in deployments. Secrets live only in `.env` (git-ignored) and the environment; `.env.example` holds placeholders.
+The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` = 1000) are constants in `retrieval.py`, not settings: they are tuned with evaluation data, not per environment. The Hugging Face token is not a setting: it is stored by `hf auth login`, or supplied as `HF_TOKEN` in deployments. Secrets live only in `.env` (git-ignored) and the environment; `.env.example` holds placeholders.
 
 ---
 
@@ -271,12 +281,12 @@ The search limits (`DEFAULT_TOP_K`, `MAX_TOP_K`, `MAX_QUESTION_CHARS`) are const
 - Quality gates: Ruff, pytest, pre-commit (including a secret scanner), GitHub Actions CI on every push.
 
 **Tests**
-- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs.
+- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The evaluation runner and scoring are tested with fake services too.
 - Integration tests use the real PostgreSQL and MinIO containers and skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set or a service is unreachable. Each test removes only what it created. Retrieval integration tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0).
-- Real Docling conversion, the real embedding model and real Gemini are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py` and `scripts/smoke_gemini.py`. Current counts: ROADMAP handoff.
+- Real Docling conversion, the real embedding model and real Gemini are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py` and `scripts/evaluate.py`. Current counts: ROADMAP handoff.
 
 ---
 
 ## 13. Not built yet
 
-Evaluation (Phase 7), Airflow orchestration and the `documents.status` lifecycle (8), Streamlit UI (9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Hybrid retrieval, reranking, a vector index and a similarity threshold are deliberately absent until evaluation shows a need.
+Airflow orchestration and the `documents.status` lifecycle (Phase 8), Streamlit UI (9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (DECISIONS D-07, D-33, E-4).

@@ -7,20 +7,20 @@
 
 ## Handoff (read this first)
 
-Updated: 2026-10-13, after Phase 6, the docs restructure and the corpus move into the repo.
+Updated: 2026-10-18, after Phase 7 (tag `phase-7`).
 
 - **Product:** upload PDFs, ask questions, get grounded answers with document, page and section citations, or a clear "not found".
-- **Current phase:** Phase 6 is complete. **Phase 7 (evaluation) is next and not started.**
-- **What works today:** upload (`POST /api/v1/documents`), manual ingestion (`scripts/ingest_document.py <document_id>`), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`). Last verified: 129 unit tests pass, 15 integration tests skip without Docker, Ruff clean, CI green (commit `2203c20`).
-- **What does not exist yet:** evaluation, Airflow, UI, Docker image for the app, AWS, Terraform. No list or delete endpoint for documents. Upload does not start ingestion. `documents.status` stays `uploaded`.
-- **Data state:** the test corpus is 14 AI-generated policy PDFs of a fictional German company, committed in `data/corpus/` (origin in `data/corpus/SOURCES.md`, decision D-40). 3 are ingested in the local database (21, 11, 32 chunks: Workplace-Policies, Smoke-Free-Workplace-Policy, Working-Hours-PTO-and-Vacation); 11 are not. Third-party or private documents (for example the ISO 27001 PDF) stay outside Git.
-- **LLM:** `gemini-3.5-flash-lite` on the Gemini API free tier. Limits and data-use terms: DECISIONS.
+- **Current phase:** Phase 7 is complete. **Phase 8 (Airflow) is next and not started.**
+- **What works today:** upload (`POST /api/v1/documents`), ingestion by hand (`scripts/ingest_document.py <document_id>`) or for a whole folder (`scripts/ingest_folder.py`), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), and the evaluation runner (`scripts/evaluate.py`). Last verified: 195 tests pass, Ruff clean, CI green (commit `fab0ec1`).
+- **What does not exist yet:** Airflow, UI, Docker image for the app, AWS, Terraform. No list or delete endpoint for documents. Upload does not start ingestion. `documents.status` stays `uploaded`.
+- **Data state:** the 14 corpus PDFs in `data/corpus/` are all ingested in the local database (302 chunks). Evaluation set: `data/eval/questions.json` (version 5, 52 questions). Kept runs: `data/eval/results/` (baseline and `top_k` 8). Scratch runs: `data/eval/runs/` (git-ignored). Numbers: DECISIONS E-4.
+- **LLM:** `gemini-3.5-flash-lite` on the Gemini API free tier. Limits: `docs/provider_limits.md`. Data-use terms: DECISIONS D-36.
 - **Rules in force:**
   - Only fictional or openly licensed documents may go to Gemini (free tier may use the data). The ISO 27001 PDF stays local.
-  - No similarity threshold, hybrid search, reranking or vector index until Phase 7 shows a need.
-  - One change per experiment, measured against the same question set.
+  - No similarity threshold (D-33, E-4), hybrid search, reranking or vector index: Phase 7 showed no need.
+  - Any change to chunking, embeddings, the prompt or `top_k`: rerun `scripts/evaluate.py` and compare with `data/eval/results/`. One change per experiment.
   - The AI never writes citations; code builds them from stored chunks.
-- **Next action (Phase 7, step 1):** draft the question set from the corpus PDFs. The user attaches the PDFs to the chat in batches (first batch: confidentiality, harassment, substance abuse, health and safety, handbook); the AI reads them and writes questions with expected answers, pages and kinds. Then step 2: a bulk script to upload and ingest a whole folder. Then step 3: the runner and the baseline.
+- **Next action (Phase 8, step 1):** design the DAG. Tasks call the existing functions (`IngestionService` in `app/services/ingestion.py`; `scripts/ingest_folder.py` is the blueprint). Airflow owns the `documents.status` lifecycle.
 - **Documents:** README (use), ROADMAP (this), ARCHITECTURE (system now), DECISIONS (why), PROJECT (scope). Working rules live in the private kit, loaded by the Project instructions.
 
 ---
@@ -36,8 +36,8 @@ Updated: 2026-10-13, after Phase 6, the docs restructure and the corpus move int
 | 4 | Embeddings | done | chunks and queries become compatible 768-dim vectors |
 | 5 | Retrieval | done | a question retrieves the right chunks with provenance |
 | 6 | Gemini + RAG | done | grounded answer with citations, or a clear refusal |
-| 7 | Evaluation | **next** | repeatable measurement of quality |
-| 8 | Airflow | planned | same ingestion logic runs directly and through Airflow |
+| 7 | Evaluation | done | repeatable measurement of quality |
+| 8 | Airflow | **next** | same ingestion logic runs directly and through Airflow |
 | 9 | Streamlit UI | planned | full use without calling the API by hand |
 | 10 | Complete local system | planned | everything works together locally |
 | 11 | Containerization | planned | clean environment starts with Docker |
@@ -48,48 +48,22 @@ Updated: 2026-10-13, after Phase 6, the docs restructure and the corpus move int
 
 Completed phases are not re-described here. For what each one built, read ARCHITECTURE. For why, read DECISIONS. Git tags mark the end of phases (`phase-N`).
 
-**Milestones reached:** 1 backend foundation (end of Phase 2), 2 AI knowledge pipeline (Phase 4), 3 working AI assistant (Phase 6).
-**Milestones ahead:** 4 evaluated system (Phase 7), 5 complete local product (Phase 10), 6 cloud deployment (Phase 13).
+**Milestones reached:** 1 backend foundation (end of Phase 2), 2 AI knowledge pipeline (Phase 4), 3 working AI assistant (Phase 6), 4 evaluated system (Phase 7).
+**Milestones ahead:** 5 complete local product (Phase 10), 6 cloud deployment (Phase 13).
 
 ---
 
-## Phase 7: Evaluation (next)
+## Phase 7: Evaluation (done)
 
-**Goal:** know whether the system works, and make every later change prove itself against numbers. This comes before any optimization.
+**Goal:** know whether the system works, and make every later change prove itself against numbers.
 
-**Why now:** Phase 6 answers were checked by hand on a handful of questions. That is a demo, not a measurement. The open questions below cannot be answered without data.
+**Built:** bulk ingestion (`scripts/ingest_folder.py`, `app/services/ingestion.py`), the 52-question set (`data/eval/questions.json`), the runner and scoring (`scripts/evaluate.py`, `app/evaluation/`), a baseline and one experiment (`top_k` 8). Numbers and reasons: DECISIONS D-41, D-42, E-4. How to run it: README, "Evaluate".
 
-**Build:**
-1. **Corpus.** The 14 PDFs are in `data/corpus/`. Ingest the 11 remaining ones with a small bulk script (`scripts/ingest_folder.py`: upload and ingest every PDF in a folder; a few minutes per file on this CPU). Only fictional or openly licensed documents.
-2. **Question set** in `data/eval/` as JSON (not CSV: `.gitignore` ignores `data/**/*.csv`). Each item: question, expected answer facts, expected document, expected page, kind. Aim for about 40 questions to start, in these kinds:
-   - answerable from one passage
-   - answerable only by combining passages
-   - topics that overlap across files (harassment, smoking, working hours, confidentiality), to test citation precision
-   - **not answerable**, and near-misses on the same topic
-   - table and heading cases (known Phase 3 limits)
-   - cross-language (a French question against English documents worked once)
-3. **Runner** `scripts/evaluate.py`: calls the services directly (not HTTP), writes one result file per run, paces requests under the free-tier limit.
-4. **Metrics**, with retrieval and generation measured separately so a wrong answer can be traced:
-   - retrieval: is the expected document and page in the top k?
-   - citation: is each citation a chunk that supports the answer? how often is there padding (unneeded citations)?
-   - refusal: answerable questions answered, unanswerable refused
-   - answer correctness against the expected facts (reviewed by hand at first)
-5. **Baseline** first. Then one experiment at a time; record each result next to the baseline.
+**Result in one line:** retrieval puts the expected source in the top 3 for every answerable question; the one real failure at `top_k` 5 (q07) is fixed at 8; the default is now 8.
 
-**Experiments to run after the baseline exists (not before):**
-- similarity threshold for "not found", chosen from logged scores, compared with the model's own `found` (data so far: separates on one corpus, fails on another)
-- heading as embedding title versus none
-- chunk size 256, 512, 1024 (`MAX_CHUNK_TOKENS`)
-- `top_k` (default 5) and question length limit (1000): both are guesses
-- merging heading-only chunks into the next chunk
-- excluding or down-weighting bibliography chunks
-- Docling `repeat_table_header` option
-- `gemini-3.5-flash-lite` versus a larger Flash model, and the thinking level (small free quota on larger models)
-- a vector index (only if search time becomes measurable)
+**Not tested** (no measured need; do them only if a change in the corpus or the requirements justifies it): similarity threshold (measured: does not separate, E-4), heading as embedding title, chunk size 256 or 1024, merging heading-only chunks, excluding bibliography chunks, Docling `repeat_table_header`, a larger Flash model or thinking level (20 requests a day on the free tier), a vector index.
 
-**Rules:** no optimization on intuition. Pace requests (about 15 per minute, 500 per day on the free tier). Log numbers only.
-
-**Exit condition:** a repeatable evaluation that says whether a change made the system better or worse.
+**Exit condition met:** a repeatable evaluation that says whether a change made the system better or worse.
 
 ---
 
@@ -97,10 +71,10 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 
 **Goal:** orchestrate ingestion without moving logic into Airflow.
 
-- DAG tasks call existing functions: `app/pipeline/`, `EmbeddingService`, `ChunkService`. `scripts/ingest_document.py` is the blueprint.
+- DAG tasks call existing functions: `IngestionService` (`app/services/ingestion.py`), which chains `app/pipeline/`, `EmbeddingService` and `ChunkService`. `scripts/ingest_folder.py` and `scripts/ingest_document.py` are the blueprints.
 - Closes today's gap: upload does not start ingestion.
 - Owns the `documents.status` lifecycle: `uploaded`, `processing`, `processed`, `failed`.
-- Timing to plan for: about 10 s per page conversion, about 1.6 to 2.5 s per chunk embedding on this CPU; a short PDF takes about 3 minutes. Timeouts and retries must allow for it.
+- Timing to plan for: about 10 s per page conversion, about 1.6 to 2.5 s per chunk embedding on this CPU; a short PDF takes about 3 minutes (the 11 remaining corpus files took about 18 minutes together). Timeouts and retries must allow for it.
 - The worker needs the Hugging Face token (EmbeddingGemma is gated) or a pre-downloaded model volume.
 
 **Exit:** the same logic works directly and through Airflow.
@@ -142,7 +116,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 
 ## Phase 14: Production quality
 
-**Goal:** logging, error handling, configuration, tests, monitoring, reproducibility, deployment reliability. RAG improvements (hybrid retrieval, reranking, better chunking, prompt changes, filtering) only if Phase 7 evidence justifies them.
+**Goal:** logging, error handling, configuration, tests, monitoring, reproducibility, deployment reliability. RAG improvements (hybrid retrieval, reranking, better chunking, prompt changes, filtering) only if evaluation evidence justifies them. Rerun `scripts/evaluate.py` against `data/eval/results/` before and after any such change.
 
 ## Phase 15: Portfolio
 
@@ -156,6 +130,8 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 - Model loading lock (two simultaneous first requests may both load the model; harmless for one developer).
 - Map `ValueError` from services to an HTTP error for callers that skip the schemas.
 - Check accent display in PowerShell 5.1.
+- Evaluation gaps: source matching is page-level, so a chunk on the right page counts even if it lacks the fact; a qualified answer (q16, q24) is judged by hand because the refusal metric only reads `found`. Literal fact matching was tried and rejected (D-41).
+- Typos in expected facts of `questions.json` (q02 "untilyou", q45 "givenas"); "10-2027" typo in `data/corpus/SOURCES.md`; the Dress Code and Handbook PDFs share the document id NS-HR-POL-005.
 
 ---
 
