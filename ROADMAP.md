@@ -20,7 +20,10 @@ Updated: 2026-10-18, after Phase 7 (tag `phase-7`).
   - No similarity threshold (D-33, E-4), hybrid search, reranking or vector index: Phase 7 showed no need.
   - Any change to chunking, embeddings, the prompt or `top_k`: rerun `scripts/evaluate.py` and compare with `data/eval/results/`. One change per experiment.
   - The AI never writes citations; code builds them from stored chunks.
-- **Next action (Phase 8, step 1):** design the DAG. Tasks call the existing functions (`IngestionService` in `app/services/ingestion.py`; `scripts/ingest_folder.py` is the blueprint). Airflow owns the `documents.status` lifecycle.
+- **Next action (Phase 8, step 1):** the 30-minute radar on Airflow (current stable version, how to run it locally on Windows with Docker), then design the DAG. Tasks call the existing functions (`IngestionService` in `app/services/ingestion.py`; `scripts/ingest_folder.py` is the blueprint). Airflow owns the `documents.status` lifecycle.
+- **Open questions:** Airflow runtime (extra Docker Compose services, executor, where the model cache and Hugging Face token live). Decide in step 1 and record it in DECISIONS.
+- **Checks:** run `scripts/check.ps1` before every push. The pre-push hook runs it too.
+- **Opening line for the new chat:** `Continue from the ROADMAP handoff.`
 - **Documents:** README (use), ROADMAP (this), ARCHITECTURE (system now), DECISIONS (why), PROJECT (scope). Working rules live in the private kit, loaded by the Project instructions.
 
 ---
@@ -78,6 +81,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 - The worker needs the Hugging Face token (EmbeddingGemma is gated) or a pre-downloaded model volume.
 
 **Exit:** the same logic works directly and through Airflow.
+**Limit:** about 40 exchanges. At the limit, cut scope or extend with a written reason.
 
 ## Phase 9: Streamlit UI
 
