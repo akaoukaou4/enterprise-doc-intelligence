@@ -1,5 +1,5 @@
 # Derived from the official Airflow 3.3.2 docker-compose.yaml, which is kept
-# unmodified in docker-compose.official.yaml (except two "pragma: allowlist secret"
+# unmodified in docker-compose.official.yaml (except three "pragma: allowlist secret"
 # comments for the secret scanner). Changes (so an upgrade is a diff):
 #   1. LocalExecutor: removed redis, airflow-worker, flower and all Celery settings.
 #   2. Removed airflow-triggerer (no deferrable tasks yet; add it back if the UI asks).
