@@ -128,6 +128,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 - Models in the Airflow image: the embedding model is in the `hf-cache` volume, but the RapidOCR models (about 100 s of download) live in the container layer and are fetched again when the container is recreated. Check Docling's documented way to pre-download them first. Natural place: Phase 11.
 - Ingestion edge cases: a document that kills the worker is reset and retried at every run (no attempt counter); the reset of stuck documents assumes no manual ingestion runs at the same time.
 - Cold start: the first run of an ingestion task took about 66 s before the work started, a retry only 9 s (E-5). Disk cache on the HDD is the suspected cause, not proven. Measure again on an SSD or on AWS before tuning anything.
+- Docs over the size budget (ENGINEERING_STANDARDS section 13): README about 13.6 KB (budget 8), ARCHITECTURE about 26 KB (20), DECISIONS about 44 KB (30). Compress settled old records and repeated detail, never only append. One docs-only step early in Phase 9.
 - Model loading lock (two simultaneous first requests may both load the model; harmless for one developer).
 - Map `ValueError` from services to an HTTP error for callers that skip the schemas.
 - Check accent display in PowerShell 5.1.

@@ -408,13 +408,10 @@ It does **not** contain the core processing logic.
 Conceptually:
 
 ```text
-Airflow
+Airflow DAG (every minute)
    │
-   ├── extract task
-   ├── clean task
-   ├── chunk task
-   ├── embed task
-   └── store task
+   ├── claim task: take new uploads, mark them processing
+   └── ingest task: one per document, runs the whole pipeline
 ```
 
 The underlying Python functions remain independently executable.
