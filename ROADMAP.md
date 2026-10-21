@@ -124,6 +124,10 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 ## Backlog (small items, no phase yet)
 
 - List and delete endpoints for documents (cleanup needed SQL and the MinIO console).
+- Ripple-check script: search all docs for a changed term. Do it with the docs compression step early in Phase 9.
+- Security pass before Phase 12: upload size and type limits, an authentication decision, one prompt-injection case in the evaluation set.
+- Structured logs (request id, latency, token counts): Phase 10.
+- Second-model check of the evaluation before any "evaluated system" claim on a CV.
 - Failure reason: stored only in the Airflow task log. If the UI must show it, add a `documents.error` column (Phase 9 decides).
 - Models in the Airflow image: the embedding model is in the `hf-cache` volume, but the RapidOCR models (about 100 s of download) live in the container layer and are fetched again when the container is recreated. Check Docling's documented way to pre-download them first. Natural place: Phase 11.
 - Ingestion edge cases: a document that kills the worker is reset and retried at every run (no attempt counter); the reset of stuck documents assumes no manual ingestion runs at the same time.
