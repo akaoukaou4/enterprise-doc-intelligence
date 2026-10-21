@@ -2,6 +2,7 @@
 
 Runs the whole chain for a document that is already uploaded:
 MinIO -> pipeline (Docling, chunks) -> embeddings -> PostgreSQL (pgvector).
+The outcome is recorded in documents.status (processed or failed).
 
     uv run python -m scripts.ingest_document <document_id>
 
@@ -17,6 +18,7 @@ from app.db.models import Document
 from app.db.session import get_session_factory
 from app.pipeline.process import process_pdf
 from app.services.chunks import ChunkService
+from app.services.document_status import DocumentStatusService, IngestionRunner
 from app.services.embeddings import EmbeddingService
 from app.services.ingestion import IngestionService
 from app.services.storage import StorageService
@@ -35,10 +37,10 @@ def main() -> None:
             raise SystemExit(f"Document not found: {args.document_id}")
         print(f"Document: {document.filename} ({document.size_bytes} bytes)")
 
-        service = IngestionService(
+        ingestion = IngestionService(
             StorageService(settings), EmbeddingService(settings), ChunkService(db), process_pdf
         )
-        result = service.ingest(document)
+        result = IngestionRunner(ingestion, DocumentStatusService(db)).run(document)
 
     print(f"1. Pipeline:   {result.chunk_count} chunks in {result.pipeline_seconds:.0f} s")
     print(f"2. Embeddings: {result.chunk_count} vectors in {result.embedding_seconds:.0f} s")

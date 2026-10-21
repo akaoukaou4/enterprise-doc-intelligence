@@ -11,7 +11,7 @@ Upload PDF ─► Docling ─► HybridChunker ─► EmbeddingGemma ─► Post
 Question ─► retrieve closest chunks ─► Gemini ─► grounded answer + citations (or "not found")
 ```
 
-Citations are built by code from the stored chunks. The model only says which numbered sources it used, so it cannot invent a page number. Details: [ARCHITECTURE.md](ARCHITECTURE.md).
+Citations are built by code from the stored chunks. The model only says which numbered sources it used, so it cannot invent a page number. Ingestion (everything after the upload) starts by itself: an Airflow DAG picks up new documents and tracks their status. Details: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Tech stack
 
@@ -22,14 +22,15 @@ Citations are built by code from the stored chunks. The model only says which nu
 | Object storage | MinIO locally, S3 on AWS (through boto3) |
 | Document processing | Docling, HybridChunker (CPU-only PyTorch) |
 | AI | EmbeddingGemma (embeddings, local), Gemini API (generation), RAG |
+| Orchestration | Apache Airflow 3 (LocalExecutor, Docker Compose) |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
-| Planned | Airflow, Streamlit, Docker image, AWS (EC2, RDS, S3), Terraform |
+| Planned | Streamlit, Docker image for the app, AWS (EC2, RDS, S3), Terraform |
 
 Why each choice was made: [DECISIONS.md](DECISIONS.md).
 
 ## Getting started
 
-Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, a free Hugging Face account (for EmbeddingGemma) and a Gemini API key (for `/ask`).
+Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, a free Hugging Face account (for EmbeddingGemma) and a Gemini API key (for `/ask`). For Airflow: Docker with at least 8 GB of memory (one ingestion peaks at about 5 GB).
 
 ```powershell
 # 1. Install dependencies (Docling and CPU-only PyTorch: several GB)
@@ -83,6 +84,54 @@ uv and Hugging Face cache large downloads under your user folder on C: by defaul
 [Environment]::SetEnvironmentVariable("HF_HOME", "D:\path\to\_caches\huggingface", "User")
 ```
 
+### Airflow (automatic ingestion)
+
+Airflow has its own Docker Compose in `airflow/`. The root `docker compose up -d` does not start it, so API work stays light. Start the root stack first: Airflow reads PostgreSQL and MinIO on your computer.
+
+**First time only.** Create the file `airflow\.env` (it is git-ignored; never commit it):
+
+| Key | Value |
+|---|---|
+| `AIRFLOW_UID` | `50000` |
+| `FERNET_KEY` | a new random key, see the command below |
+| `DATABASE_URL` | the value from the root `.env`, with `host.docker.internal` instead of `localhost` or `127.0.0.1` |
+| `MINIO_ENDPOINT` | `http://host.docker.internal:9000` |
+| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET` | the same as the root `.env` |
+| `HF_TOKEN` | your Hugging Face token (the model is gated) |
+
+Do not copy `GEMINI_API_KEY`: ingestion never calls Gemini. A Fernet key is 32 random bytes in URL-safe base64; this prints one:
+
+```powershell
+$b = New-Object byte[] 32; (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($b); [Convert]::ToBase64String($b).Replace('+','-').Replace('/','_')
+```
+
+Then build and initialize (a few GB and several minutes the first time):
+
+```powershell
+cd airflow
+docker compose build
+docker compose up airflow-init
+docker compose up -d
+```
+
+The UI is at http://localhost:8080 (login `airflow` / `airflow`, local use only). The DAG `ingest_documents` is created paused. Unpause it once, from the `airflow` folder:
+
+```powershell
+docker compose exec airflow-scheduler airflow dags unpause ingest_documents
+docker compose exec airflow-scheduler airflow dags list-import-errors
+```
+
+The second command must print "No data found" (no import errors). **Pause the DAG when you stop working** (it polls every minute), then stop the stack:
+
+```powershell
+docker compose exec airflow-scheduler airflow dags pause ingest_documents
+docker compose down
+```
+
+Never run `docker compose down -v` unless you mean it: it deletes the `hf-cache` volume (a download of about 12 minutes) and the Airflow history.
+
+**Timing.** The first ingestion in a new container also downloads the models (17.5 minutes measured). After that a short PDF takes about 4 minutes from upload to `processed`. One ingestion runs at a time. If you change `pyproject.toml` or `uv.lock`, run `docker compose build` again; a change in `app/` or `scripts/` needs no rebuild (they are mounted).
+
 ## Usage
 
 ### 1. Upload a PDF
@@ -93,17 +142,32 @@ A fictional test corpus of company policy PDFs is in `data/corpus/` (origin: `da
 curl.exe -F "file=@C:\path\to\your.pdf;type=application/pdf" http://localhost:8000/api/v1/documents
 ```
 
-The response contains the document `id`. `GET /api/v1/documents/<id>` returns its metadata. Files that are not PDFs, are empty, or exceed `MAX_UPLOAD_MB` (default 20) are rejected.
+The response contains the document `id` and its `status` (`uploaded`). `GET /api/v1/documents/<id>` returns its metadata and current status. Files that are not PDFs, are empty, or exceed `MAX_UPLOAD_MB` (default 20) are rejected.
 
-### 2. Ingest it
+### 2. Ingestion
 
-Upload does not start processing yet. Run the ingestion for the document (copy the `id`, do not type it):
+With Airflow running and the DAG unpaused, nothing more is needed. Within about a minute the document becomes `processing`, then `processed` (ready for questions) or `failed`:
+
+| Status | Meaning |
+|---|---|
+| `uploaded` | stored, waiting for the next DAG run |
+| `processing` | claimed, being converted, embedded and stored |
+| `processed` | chunks are stored, the document can answer questions |
+| `failed` | ingestion raised an error; it is not tried again by itself |
+
+The reason for a failure is in the Airflow UI: open the DAG `ingest_documents`, the run (red), the task `ingest`, then its log. To try a failed document again, set its status back to `uploaded` (copy the `id`, do not type it):
+
+```powershell
+docker exec enterprise-doc-intelligence-postgres psql -U app -d enterprise_docs -c "update documents set status = 'uploaded' where id = '<document_id>'"
+```
+
+**Without Airflow, by hand.** Pause the DAG first if it is running, then:
 
 ```powershell
 uv run python -m scripts.ingest_document <document_id>
 ```
 
-It reads the PDF from MinIO, processes it, embeds the chunks and stores them. Running it again replaces the document's chunks. Nothing is sent to Gemini. On a CPU a short PDF takes a few minutes, and the first run also loads the models.
+It reads the PDF from MinIO, processes it, embeds the chunks, stores them and sets the status. Running it again replaces the document's chunks. Nothing is sent to Gemini. On a CPU a short PDF takes a few minutes, and the first run also loads the models.
 
 To upload and ingest a whole folder (for example the corpus), look at what it would do first, then run it. A document that is already ingested is skipped, so it is safe to repeat. The 14 corpus files take about half an hour on a CPU:
 
@@ -181,12 +245,18 @@ Results go to `data/eval/runs/` (git-ignored). A full run also writes a `.review
 ## Development
 
 ```powershell
+.\scripts\check.ps1
+```
+
+This runs Ruff and the unit and integration tests, and is the one command to run before every push (the pre-push hook runs it too). Individual commands:
+
+```powershell
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers (`docker compose up -d` first) and skip themselves when those are not available. Test file names must be unique across `tests/` (no `__init__.py`, so a duplicate name stops pytest at collection).
+Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers (`docker compose up -d` first) and skip themselves when those are not available. Test file names must be unique across `tests/` (no `__init__.py`, so a duplicate name stops pytest at collection). CI has no Airflow: the DAG itself is checked inside the container with `airflow dags list-import-errors` (see "Airflow").
 
 ## Known limitations
 
@@ -194,9 +264,10 @@ Unit tests use fakes: no Docling or embedding model, no database, and they never
 * Some section headings are wrong or missing, so the page number is the most reliable part of a citation.
 * There is no similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation. On the evaluation set it refused every question the documents cannot answer.
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (DECISIONS, E-4).
-* No list or delete endpoint for documents, and upload does not trigger ingestion.
+* No list or delete endpoint for documents.
+* Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
 
-Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4) and the backlog in [ROADMAP.md](ROADMAP.md).
+Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and the backlog in [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 

@@ -7,7 +7,7 @@
 
 - One record per decision, numbered `D-nn`. Append new ones at the end. Never delete or rewrite an old one.
 - **Status:** *Accepted*, *Revisit at Phase N* (accepted, with a known trigger to look again), or *Superseded by D-nn*. When a decision changes, add a new record that says "Supersedes D-nn", and change the old status. Link both ways. Then run the ripple check: fix every doc that mentions the old decision, in the same commit.
-- Record shape: **Decision**, **Why**, **Rejected** (alternatives and the reason), **Revisit** (what would change my mind). Evidence tables are at the end (E-1 to E-4).
+- Record shape: **Decision**, **Why**, **Rejected** (alternatives and the reason), **Revisit** (what would change my mind). Evidence tables are at the end (E-1 to E-5).
 - Volatile facts (model names, quotas, versions) are written here once, with the date they were checked.
 - Section numbers of the old file (for example "12.2") no longer exist. The old file is in Git at the tag `docs-before-restructure`.
 
@@ -131,13 +131,14 @@
 **Revisit.** Phase 11: run offline with a pre-downloaded model; decide between preloading and lazy loading.
 
 ### D-22 · ChunkService replaces in one transaction, validates first · Accepted
-**Decision.** `replace_chunks(document_id, chunks, vectors)` checks counts and 768 values (`ValueError`), raises `NotFoundError` for an unknown document, deletes old chunks and inserts new ones in one transaction, and keeps the old chunks on any failure. An empty list clears the chunks. It does not change `documents.status`.
+**Decision.** `replace_chunks(document_id, chunks, vectors)` checks counts and 768 values (`ValueError`), raises `NotFoundError` for an unknown document, deletes old chunks and inserts new ones in one transaction, and keeps the old chunks on any failure. An empty list clears the chunks. It does not change `documents.status` (the status is set by `IngestionRunner`, D-45).
 **Why.** Reprocessing must not duplicate, and a half-written document must never be visible. A count mismatch is a caller bug, not a user error.
 
-### D-23 · Direct ingestion script, no ingestion class · Revisit at Phase 8
+### D-23 · Direct ingestion script, no ingestion class · Accepted (Phase 8 update below)
 **Decision.** `scripts/ingest_document.py <document_id>` chains download, `process_pdf`, `embed_documents`, `replace_chunks`. Safe to repeat. It is the blueprint for the Airflow tasks.
 **Why.** Four calls do not need a class yet. Status transitions belong to Phase 8.
 **Phase 7 update.** The bulk script `scripts/ingest_folder.py` needed the same four calls, so they moved into `IngestionService` (`app/services/ingestion.py`). Both scripts call it, and Phase 8 will call it too. The "no class" choice was reversed because a second caller appeared.
+**Phase 8 update.** The scripts stay the entry points, but both now go through `IngestionRunner` (D-45), which also sets `documents.status`. The Airflow tasks run these same scripts (D-44), so direct and orchestrated ingestion are one code path.
 
 ### D-24 · Retrieval returns plain objects; `/search` is an inspection endpoint · Accepted
 **Decision.** `RetrievalService.search` returns frozen `RetrievedChunk(document_id, filename, page_numbers, heading, text, similarity)`, with the file name joined in the query. `POST /api/v1/search` exposes it.
@@ -252,6 +253,39 @@
 
 ---
 
+## Orchestration (Phase 8)
+
+### D-43 · Airflow 3.3.2 with LocalExecutor, in its own compose in `airflow/` · Accepted (2026-10-18) · Revisit at Phase 12
+**Decision.** Airflow 3.3.2 (the current stable version when checked in the official documentation on 2026-10-18). It runs from `airflow/docker-compose.yaml`, separate from the root compose: `cd airflow; docker compose up -d`. Services: api-server, scheduler, dag-processor, and its own `postgres:16` for Airflow's metadata. Executor: LocalExecutor (tasks are subprocesses of the scheduler), `[core] parallelism` 2. DAGs are created paused, no example DAGs, login `airflow` / `airflow` (local use only). The file is derived from the official compose; a header comment lists every change.
+**Why.** The official compose is meant for learning and local use, which is this phase. Ingestion runs one heavy task at a time (peak about 5.2 GB, E-5), so LocalExecutor is enough and needs no Redis, no worker and no Flower, which saves memory on an 8 GB Docker VM. The root `docker compose up -d` stays light (PostgreSQL and MinIO), so API work does not need Airflow. Airflow's metadata is in its own database, so a reset or an upgrade of Airflow cannot touch documents.
+**Rejected.** CeleryExecutor (more containers and memory, no gain for one task at a time). Airflow as a profile of the root compose (every start would carry a multi-GB image and four more containers). Airflow metadata in the application database (shared fate).
+**Consequence.** Two compose files. The Airflow containers reach the host services through `host.docker.internal` (PostgreSQL on 5433, MinIO on 9000); in Phases 11 and 12 these become service names or RDS and S3.
+**Revisit.** Phase 12 (how Airflow runs on AWS), or if more than one ingestion must run at the same time.
+
+### D-44 · The app runs in its own virtual environment inside the Airflow image; the DAG calls the scripts · Accepted (2026-10-18) · Revisit at Phase 11
+**Decision.** A custom image `enterprise-doc-airflow:3.3.2` on `apache/airflow:3.3.2`. Airflow runs Python 3.13, the project needs 3.12 and the locked CPU PyTorch, so a second environment `/opt/app-venv` is built from `uv.lock` (`uv sync --frozen --no-dev --python 3.12`). The DAG tasks are `BashOperator`s that run `python -m scripts.claim_documents` and `python -m scripts.ingest_document <id>` in that environment (`env -u PYTHONPATH` keeps Airflow's packages out of it). `app/` and `scripts/` are mounted read-only, not copied into the image. Secrets are in `airflow/.env` (git-ignored). It holds `HF_TOKEN` but not `GEMINI_API_KEY`, because ingestion never calls Gemini (I13, least privilege). The Hugging Face cache is the named volume `hf-cache`. Docling needs system libraries for OpenCV, added with `apt`; the build checks `import cv2, torch, docling`.
+**Why.** One lock file and one code path: the Airflow run is the same code as the direct run (E-5: identical chunks). Importing `app` into Airflow's own Python would mix two dependency sets and two Python versions. A mounted code folder needs no rebuild after a code change; the image is rebuilt only when dependencies change.
+**Rejected.** `PythonOperator` or the TaskFlow API importing `app` (dependency conflicts with Airflow's pinned packages, Python 3.13 against 3.12). `DockerOperator` (needs the Docker socket inside a container). Copying the code into the image (a rebuild of a multi-GB image for every change).
+**Limits.** The RapidOCR models are downloaded on first use into the container layer, so a recreated container downloads them again (about 100 s; backlog). The code mount is for development only: Phase 11 builds an app image with the code inside.
+**Revisit.** Phase 11.
+
+### D-45 · The status lifecycle lives in app code, not in Airflow · Accepted (2026-10-20)
+**Changes the Phase 8 plan,** which said Airflow would own `documents.status`.
+**Decision.** `documents.status` goes `uploaded`, `processing`, then `processed` or `failed` (a plain string, D-19, so no schema change). The logic is in `app/services/document_status.py`. `DocumentStatusService` has `claim_uploaded` (`SELECT ... FOR UPDATE SKIP LOCKED`, oldest first), `reset_orphans` and `mark_*`. `IngestionRunner` marks `processing`, calls `IngestionService`, then marks `processed`, or marks `failed` and re-raises. `scripts/ingest_document.py` and `scripts/ingest_folder.py` use the runner too. A `failed` document is never claimed again. `reset_orphans` turns leftover `processing` documents back to `uploaded` at the start of each claim. Migration `8c1d5e7a2b96` sets existing `uploaded` documents that already have chunks to `processed`. `ChunkService` still does not touch the status (D-22).
+**Why.** The status must be true whoever starts the ingestion (D-03: Airflow orchestrates, it does not own logic). A status set only inside DAG tasks would be wrong after a manual run, and testing it would need Airflow. In app code the transitions are unit-tested with a fake ingestor and integration-tested on the real database inside a rolled-back transaction. `SKIP LOCKED` means two claims never get the same document. A final `failed` stops a corrupt PDF from looping forever.
+**Rejected.** Status updates inside DAG tasks (wrong for manual runs, untestable without Airflow). An ENUM (D-19). Automatic retry of failed documents (a poison document would come back at every run; to retry by hand, set its status back to `uploaded`).
+**Limits.** The failure reason is only in the Airflow task log. A document whose ingestion kills the worker is reset and tried again at every run (no attempt counter). `reset_orphans` assumes no manual ingestion runs at the same moment (the DAG itself never overlaps: `max_active_runs` 1).
+**Revisit.** Phase 9 if the UI needs the reason (an `error` column). Phase 14 for an attempt counter.
+
+### D-46 · One polling DAG: claim, then one mapped ingest task per document · Accepted (2026-10-20) · Revisit at Phase 12
+**Decision.** The DAG `ingest_documents` runs every minute (`* * * * *`, `catchup=False`, `max_active_runs=1`). Task `claim` claims up to 5 documents and prints their ids. `build_commands` turns the ids into commands. `ingest` is a mapped `BashOperator`: one task per document, `max_active_tis_per_dag=1`, `retries=1` with a 1-minute delay, `execution_timeout` 45 minutes. With no document the mapped task is skipped and the run ends green (about 2.5 s). The API knows nothing about Airflow. The command and id helpers are in `airflow/dags/ingest_helpers.py` with no Airflow imports, so their unit tests run in CI (which has no Airflow). The real import check runs in the container: `airflow dags list-import-errors`.
+**Why.** Polling is the simplest way to get "starts by itself" without coupling the API to Airflow: no Airflow credentials in the API, and upload works while Airflow is down (documents wait as `uploaded`). One ingestion at a time because one peaks at about 5.2 GB of the 8 GB Docker VM (E-5). One retry covers a short outage of MinIO or PostgreSQL. The 45-minute timeout covers the first run with its model downloads (17.5 minutes measured).
+**Rejected.** The API calling the Airflow REST API (coupling, authentication, upload depends on Airflow being up). A sensor or event trigger (there is no event source). Parallel ingestion (memory). More than one retry (a corrupt PDF only fails later).
+**Cost.** Up to 60 s between upload and the start of ingestion. An idle DAG still runs every minute.
+**Revisit.** If the delay matters in the UI (Phase 9), or ingestion must run in parallel (Phase 12).
+
+---
+
 ## Evidence
 
 ### E-1 · Phase 6 refusal measurements (manual, through the running API, `gemini-3.5-flash-lite`)
@@ -301,3 +335,19 @@ Identical to the Phase 4 hand check to four digits. Small gaps between the top h
 | Mean citation precision / citations per answer | 0.969 / 1.67 | 0.979 / 1.72 |
 
 Run files: `data/eval/results/20261017-215229-full-baseline.json` and `20261017-220806-full-topk8.json`. Hand review of the baseline answers (47 answerable): 36 correct, 10 partial (missing a required detail: q02, q03, q04, q05, q09, q13, q26, q41, q42, q47), 1 wrong (q07). Top similarity: answerable 0.382 to 0.735 (mean 0.604); refusals 0.158 to 0.657 (mean 0.419), so no threshold separates them. A full run of 52 questions takes about 335 s (paced); retrieval only takes about 51 s once the model is loaded. Ingesting the 11 remaining PDFs took about 18 minutes. The contact tables are stored as sentences ("Contact = X. Email = Y. Ext. = Z"), which is why a literal "Extension 2500" never matched.
+
+### E-5 · Phase 8 Airflow measurements (2026-10-20, Airflow 3.3.2, Docker VM 8 GB and 4 CPUs, project and Docker disk on an HDD)
+
+| Test | Result |
+|---|---|
+| Upload through the API to `processed` (`Smoke-Free-Workplace-Policy.pdf`, 11 chunks) | 3 min 51 s (11:34:45 to 11:38:36); `processing` seen after 20 s |
+| Same file, Airflow run against the document made on the Windows host | 11 chunks each; text equal 11 of 11; pages and heading equal 11 of 11; largest cosine distance 0.000000 |
+| Scheduler memory during that run | 410 MiB before, peak 5.163 GiB, 1.19 GiB after the task |
+| Corrupt PDF (`%PDF-1.4` plus text, 33 bytes) | `failed` about 80 s after upload; the retry started 1 minute later and failed in 9 s (`DocumentLoadError`); the status stayed `failed`; every later claim said "claimed 0" |
+| Kill test: scheduler container restarted 100 s after `processing` began | stuck `processing` from 18:24:09, `processed` seen at 18:27:26 (polling every 15 s); 11 chunks, not 22 |
+| First run of the spike, models not yet downloaded | 17.5 minutes (embedding model about 12 minutes, RapidOCR about 100 s) |
+| Same file, models cached | 3 min 6 s (pipeline 79 s, embeddings 25 s) |
+| Task start-up before the work begins | about 66 s on the first attempt, 9 s on the retry (disk cache suspected, not proven) |
+| Idle DAG run (nothing to claim) | about 2.5 s |
+
+`scripts/check.ps1` at the end of the phase: Ruff clean, 212 tests passed. The DAG import check in the container reported "No data found" (no import errors).

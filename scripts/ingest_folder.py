@@ -9,6 +9,7 @@ A PDF is matched to the database by file name:
 - uploaded but has no chunks        -> ingested (not uploaded a second time)
 - not in the database               -> uploaded, then ingested
 So the script is safe to stop and run again. One failing file does not stop the others.
+The outcome of each ingestion is recorded in documents.status (processed or failed).
 Nothing is sent to Gemini. Expect about 3 minutes per short PDF on this CPU.
 """
 
@@ -24,6 +25,7 @@ from app.db.models import Document, DocumentChunk
 from app.db.session import get_session_factory
 from app.pipeline.process import process_pdf
 from app.services.chunks import ChunkService
+from app.services.document_status import DocumentStatusService, IngestionRunner
 from app.services.documents import PDF_CONTENT_TYPE, DocumentService
 from app.services.embeddings import EmbeddingService
 from app.services.ingestion import FolderAction, IngestionService, decide_folder_action
@@ -97,6 +99,7 @@ def main() -> None:
         ingestion = IngestionService(
             storage, EmbeddingService(settings), ChunkService(db), process_pdf
         )
+        runner = IngestionRunner(ingestion, DocumentStatusService(db))
 
         for number, (pdf, document, _action) in enumerate(todo, start=1):
             print(f"\n[{number}/{len(todo)}] {pdf.name}", flush=True)
@@ -105,7 +108,7 @@ def main() -> None:
                 if document is None:
                     document = documents.create(pdf.name, PDF_CONTENT_TYPE, pdf.read_bytes())
                     print(f"  uploaded, document id {document.id}")
-                result = ingestion.ingest(document)
+                result = runner.run(document)
             except Exception as error:  # noqa: BLE001 - one bad file must not stop the batch
                 db.rollback()
                 failures.append(pdf.name)

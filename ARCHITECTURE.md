@@ -3,13 +3,13 @@
 **Question this file answers:** how does the system work **today**?
 **Not here:** the plan (ROADMAP), the reasons behind choices (DECISIONS), how to run it (README), scope (PROJECT).
 
-Written in the present tense. If something is not built yet, it is listed once in section 13 and nowhere else. Status as of the end of Phase 7 (2026-10-18).
+Written in the present tense. If something is not built yet, it is listed once in section 13 and nowhere else. Status as of the end of Phase 8 (2026-10-21).
 
 ---
 
 ## 1. Style and invariants
 
-The system is a **modular monolith**: one Python application, organized in layers, plus PostgreSQL and MinIO as containers. No microservices.
+The system is a **modular monolith**: one Python application, organized in layers, plus PostgreSQL and MinIO as containers, and an Airflow stack that runs the ingestion. No microservices.
 
 These **invariants** must hold in every change. A change that breaks one needs a new decision in DECISIONS first.
 
@@ -28,6 +28,7 @@ These **invariants** must hold in every change. A change that breaks one needs a
 | I11 | Schema changes go through Alembic migrations. |
 | I12 | Automated tests never call Gemini. |
 | I13 | Only fictional or openly licensed documents are sent to Gemini (free tier may use the data). |
+| I14 | After the upload, `documents.status` changes only through `DocumentStatusService`. Airflow, the scripts and the API never write it directly. The DAG holds no ingestion logic: it only runs scripts. |
 
 ---
 
@@ -49,19 +50,24 @@ These **invariants** must hold in every change. A change that breaks one needs a
               │               │
               ▼               ▼
          StorageService   PostgreSQL + pgvector
-         boto3 → MinIO    documents, document_chunks
+         boto3 → MinIO    documents (with status), document_chunks
                           (S3 on AWS)
 
-   Ingestion (run by hand today):
-   scripts/ingest_document.py <document_id>   scripts/ingest_folder.py <folder>
-     both call IngestionService:
+   Ingestion, automatic (Airflow, own compose in airflow/):
+   DAG ingest_documents, every minute
+     claim:  scripts/claim_documents.py ─► DocumentStatusService  (reset leftovers, claim uploaded ─► processing)
+     ingest: one task per claimed document, one at a time ─► scripts/ingest_document.py <id>
+   Ingestion by hand: scripts/ingest_document.py <document_id>   scripts/ingest_folder.py <folder>
+     all go through IngestionRunner (sets processed or failed) which calls IngestionService:
      MinIO ─► process_pdf (Docling) ─► EmbeddingService ─► ChunkService ─► document_chunks
 
    Evaluation (run by hand):
    scripts/evaluate.py ─► RetrievalService (+ RagService in full mode) ─► data/eval/runs/*.json
 ```
 
-Docker Compose runs PostgreSQL (`pgvector/pgvector:pg18`, host port 5433) and MinIO (ports 9000 and 9001) plus a one-time `minio-init` container that creates the `documents` bucket. The API, the pipeline and the embedding model run on the host.
+The root Docker Compose runs PostgreSQL (`pgvector/pgvector:pg18`, host port 5433) and MinIO (ports 9000 and 9001) plus a one-time `minio-init` container that creates the `documents` bucket. The API runs on the host.
+
+The Airflow stack has its own compose (`airflow/docker-compose.yaml`, project `enterprise-doc-intelligence-airflow`): api-server (UI on port 8080), scheduler, dag-processor and its own `postgres:16` for Airflow's metadata, with LocalExecutor (D-43). Its image contains the app's dependencies in a separate virtual environment; the code of `app/` and `scripts/` is mounted from the repository, read-only (D-44). The ingestion code and the embedding model run inside the scheduler container, which reaches PostgreSQL and MinIO on the host through `host.docker.internal`.
 
 ---
 
@@ -76,12 +82,13 @@ app/
 │   └── v1/              router.py, info.py, documents.py, search.py, ask.py
 ├── core/                config.py (Settings), logging.py, errors.py
 ├── db/                  base.py, models.py (Document, DocumentChunk), session.py
-├── services/            documents, storage, embeddings, chunks, retrieval, llm, rag_prompt, rag, ingestion, info
+├── services/            documents, storage, embeddings, chunks, retrieval, llm, rag_prompt, rag, ingestion, document_status, info
 ├── evaluation/          questions, metrics, runner, report (scoring and reports; no database or model code)
 ├── pipeline/            models.py (Chunk), extract.py, chunk.py, clean.py, process.py
 └── schemas/             health, errors, info, documents, search, ask
+airflow/                 docker-compose.yaml, Dockerfile, Dockerfile.dockerignore, dags/ (ingest_documents.py, ingest_helpers.py); .env, logs/, config/, plugins/ are git-ignored
 migrations/              Alembic (env.py reads the URL from Settings); versions/ excluded from Ruff
-scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, ingest_folder, smoke_gemini, evaluate
+scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, ingest_folder, claim_documents, smoke_gemini, evaluate, check.ps1
 tests/unit/              fakes; run everywhere including CI
 tests/integration/       real PostgreSQL and MinIO; skip themselves when unavailable
 data/corpus/             the fictional test corpus (14 policy PDFs, committed; origin in SOURCES.md)
@@ -104,12 +111,12 @@ Routes parse HTTP, call a service and format the response (I2). Business endpoin
 | `GET /health` | liveness: the process is up |
 | `GET /health/db` | readiness: the database is reachable |
 | `GET /api/v1/info` | example route → service |
-| `POST /api/v1/documents` | upload a PDF: store the file, insert the row, return metadata (201) |
-| `GET /api/v1/documents/{id}` | metadata of one document |
+| `POST /api/v1/documents` | upload a PDF: store the file, insert the row (status `uploaded`), return metadata (201) |
+| `GET /api/v1/documents/{id}` | metadata of one document, including its current `status` |
 | `POST /api/v1/search` | the most similar chunks for a question (inspection endpoint) |
 | `POST /api/v1/ask` | grounded answer with citations |
 
-There is no list or delete endpoint for documents, and upload does not start ingestion.
+There is no list or delete endpoint for documents. The upload does not call Airflow and does not wait for ingestion: the document stays `uploaded` until the DAG claims it, within about a minute (section 6.2). If Airflow is not running, documents simply wait.
 
 **Dependencies.** `app/api/deps.py` builds services for routes. Most are built per request; the `EmbeddingService` is one shared instance (I5, `lru_cache`).
 
@@ -123,12 +130,12 @@ There is no list or delete endpoint for documents, and upload does not start ing
 
 **Object storage.** Original PDFs live in a bucket under `documents/<document_id>/<filename>`. The UUID prevents collisions. The database never holds the PDF bytes.
 
-**PostgreSQL + pgvector.** Alembic head: `3f9a7c2d1e84` (history: `b475fddcd445` creates `documents`, then `3f9a7c2d1e84` adds the `vector` extension and `document_chunks`).
+**PostgreSQL + pgvector.** Alembic head: `8c1d5e7a2b96` (history: `b475fddcd445` creates `documents`, `3f9a7c2d1e84` adds the `vector` extension and `document_chunks`, `8c1d5e7a2b96` sets already ingested documents to `processed`).
 
 ```text
 documents
   id UUID PK (generated in Python) · filename · storage_key (unique, internal, never returned by the API)
-  content_type · size_bytes · status (plain string; stays "uploaded" today) · created_at
+  content_type · size_bytes · status (plain string: uploaded, processing, processed, failed) · created_at
 
 document_chunks
   id UUID PK · document_id FK → documents.id ON DELETE CASCADE · chunk_index
@@ -140,6 +147,7 @@ document_chunks
 - `vector(768)` and `NOT NULL` make the database reject missing or wrong-sized vectors.
 - There is no vector index (HNSW or IVFFlat). An exact scan is instant at this size (302 chunks).
 - The SQLAlchemy engine is created lazily with `pool_pre_ping`, so the app starts without a database and recovers after a database restart. `DATABASE_URL` is optional in Settings so tests and CI run without one.
+- `status` is a plain string, not an ENUM (D-19). Its values and transitions are in section 6.2. There is no column for a failure reason; it is only in the Airflow task log.
 
 ---
 
@@ -152,13 +160,33 @@ POST /api/v1/documents (multipart file)
   route: read bytes ─► DocumentService.create
     validate: application/pdf, %PDF- magic bytes, not empty, within MAX_UPLOAD_MB (20 MB)
     StorageService.upload ─► MinIO / S3
-    insert documents row ─► PostgreSQL        (if the insert fails: roll back and delete the stored file)
+    insert documents row (status "uploaded") ─► PostgreSQL   (if the insert fails: roll back and delete the stored file)
   response: DocumentResponse (id, filename, content_type, size_bytes, status, created_at)
 ```
 
-### 6.2 Ingestion (direct mode, by hand)
+### 6.2 Ingestion and the status lifecycle
 
-`uv run python -m scripts.ingest_document <document_id>` ingests one stored document. `uv run python -m scripts.ingest_folder` uploads and ingests every PDF of a folder (a dry run unless `--run`; a document that already has chunks is skipped; one failure does not stop the batch). Both call `IngestionService` (`app/services/ingestion.py`): download from storage ─► `process_pdf` ─► `EmbeddingService.embed_documents` ─► `ChunkService.replace_chunks`. Airflow will call the same service (Phase 8). It does not change `documents.status`.
+```text
+uploaded ──claim──► processing ──► processed
+                        │
+                        └──────► failed          (final: never claimed again)
+
+processing left behind by a crash ──reset_orphans (at the start of every claim)──► uploaded
+```
+
+**The logic is in app code** (`app/services/document_status.py`, D-45), so the status is true whoever starts the ingestion.
+- `DocumentStatusService.claim_uploaded(limit)` selects the oldest `uploaded` documents with `FOR UPDATE SKIP LOCKED`, sets them to `processing` and commits, so two claims never get the same document. `reset_orphans()` turns leftover `processing` documents back to `uploaded`. `mark_processing`, `mark_processed` and `mark_failed` set one document.
+- `IngestionRunner.run(document)` marks `processing`, calls `IngestionService.ingest` (download from storage ─► `process_pdf` ─► `EmbeddingService.embed_documents` ─► `ChunkService.replace_chunks`), then marks `processed`. On any error it rolls back, marks `failed` and re-raises, so the caller sees the original error; if recording the failure also fails, the original error is not hidden.
+- `scripts/ingest_document.py <document_id>` ingests one stored document. `scripts/ingest_folder.py` uploads and ingests every PDF of a folder (a dry run unless `--run`; a document that already has chunks is skipped; one failure does not stop the batch). Both use `IngestionRunner`, so a manual run sets the status too.
+
+**The DAG `ingest_documents`** (`airflow/dags/`, D-46) runs every minute, one run at a time (`max_active_runs=1`, `catchup=False`):
+1. `claim` runs `scripts.claim_documents --limit 5`: it resets orphans, claims up to 5 documents and prints their ids as JSON on the last line.
+2. `build_commands` turns the ids into commands (`ingest_helpers.py`, pure Python, unit-tested).
+3. `ingest` is a mapped task, one per document, one at a time (`max_active_tis_per_dag=1`), with one retry after 1 minute and a 45-minute timeout. Each task runs `python -m scripts.ingest_document <id>` in the app's own virtual environment inside the container.
+
+With nothing to claim the mapped task is skipped and the run ends green in about 2.5 s. A failed document turns its run red; the reason is in the task log. To retry a failed document by hand, set its status back to `uploaded`. If the worker dies in the middle, the document stays `processing` until the next claim resets it (measured: recovered in about 3 minutes, E-5).
+
+**Limits:** a document whose ingestion kills the worker is reset and tried again at every run; `reset_orphans` assumes no manual ingestion is running at the same moment. Both are in the ROADMAP backlog.
 
 ### 6.3 Search
 
@@ -189,6 +217,8 @@ POST /api/v1/ask {question, top_k}
   log line: chunk count, similarities, found, cited and dropped source numbers   (numbers only, I9)
 ```
 
+Search and ask read every chunk of every document, whatever its status. A document that is not yet `processed` has no chunks (or, while it is being re-ingested, still its old ones), so it does not appear in answers until it is done.
+
 ---
 
 ## 7. Document processing pipeline (`app/pipeline/`)
@@ -211,7 +241,7 @@ PDF ─► extract (Docling, converter created once and cached)
 - Some chunks are only a heading plus a line or two of text and can take a result slot.
 - Reference lists (bibliographies) can rank in results as noise.
 
-**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes (the 11 remaining corpus files took about 18 minutes together).
+**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes (the 11 remaining corpus files took about 18 minutes together). Through Airflow the same file took 3 min 51 s from upload to `processed`, and one ingestion peaks at about 5.2 GB of memory (E-5). The very first run on a new container also downloads the models (17.5 minutes measured).
 
 ---
 
@@ -222,9 +252,9 @@ PDF ─► extract (Docling, converter created once and cached)
 - `embed_query(question)` uses the model's query prompt, so questions and documents follow the formats the model was trained on.
 - The model loads lazily on first use (about 22 s the first time, mostly update checks to huggingface.co), on CPU, through `sentence-transformers`. A dimension check at load time rejects a model that does not produce 768 values.
 - No loading lock: two simultaneous first requests could both load the model. Harmless for one developer.
-- The model is gated: accept the license and run `uv run hf auth login` once. The token is stored under `HF_HOME`, outside the repository.
+- The model is gated: accept the license and run `uv run hf auth login` once. The token is stored under `HF_HOME`, outside the repository. In the Airflow container the token is `HF_TOKEN` from `airflow/.env`, and the model cache is the named volume `hf-cache`.
 
-`ChunkService.replace_chunks(document_id, chunks, vectors)` validates that counts match and every vector has 768 values, then deletes the document's old chunks and inserts the new ones in one transaction. A failure rolls back and keeps the old chunks.
+`ChunkService.replace_chunks(document_id, chunks, vectors)` validates that counts match and every vector has 768 values, then deletes the document's old chunks and inserts the new ones in one transaction. A failure rolls back and keeps the old chunks. It does not touch `documents.status`; `IngestionRunner` does (section 6.2).
 
 ---
 
@@ -272,21 +302,25 @@ One typed `Settings` object (`app/core/config.py`) reads environment variables a
 
 The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` = 1000) are constants in `retrieval.py`, not settings: they are tuned with evaluation data, not per environment. The Hugging Face token is not a setting: it is stored by `hf auth login`, or supplied as `HF_TOKEN` in deployments. Secrets live only in `.env` (git-ignored) and the environment; `.env.example` holds placeholders.
 
+**Airflow** has its own git-ignored file, `airflow/.env`. It holds `AIRFLOW_UID`, `FERNET_KEY`, and the app variables the ingestion needs: `DATABASE_URL` and `MINIO_ENDPOINT` pointing at the host (`host.docker.internal`), `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `HF_TOKEN`. It does not hold `GEMINI_API_KEY`, because ingestion never calls Gemini (I13). Airflow's own settings (executor, parallelism, paused DAGs) are in `airflow/docker-compose.yaml`, not in `Settings`.
+
 ---
 
 ## 12. Local environment (Windows)
 
 - The project is on D:. The uv cache and Hugging Face cache are on D: too (`UV_CACHE_DIR`, `HF_HOME` under `D:\Backup\School\Project\_caches\`), outside the repository, so C: stays free and caches are never committed.
 - PyTorch is the CPU-only build from an explicit `pytorch-cpu` uv index declared in `pyproject.toml`.
-- Quality gates: Ruff, pytest, pre-commit (including a secret scanner), GitHub Actions CI on every push.
+- Docker Desktop runs on WSL 2 with a memory limit of 8 GB (`.wslconfig`). One ingestion in the Airflow container peaks at about 5.2 GB (E-5), so close heavy applications while it runs.
+- Quality gates: `scripts/check.ps1` (Ruff, pytest), pre-commit (including a secret scanner), a pre-push hook, GitHub Actions CI on every push.
+- Airflow is started and stopped on its own from `airflow/` (README). The DAG is created paused and must be unpaused once; pause it when you stop working, or it polls every minute.
 
 **Tests**
-- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The evaluation runner and scoring are tested with fake services too.
-- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set or a service is unreachable. Each test removes only what it created. Retrieval integration tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0).
-- Real Docling conversion, the real embedding model and real Gemini are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py` and `scripts/evaluate.py`. Current counts: ROADMAP handoff.
+- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The evaluation runner and scoring are tested with fake services too. The status runner is tested with a fake ingestor, and the DAG helpers are loaded by file path, since CI has no Airflow.
+- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when `DATABASE_URL` or `MINIO_ENDPOINT` is not set or a service is unreachable. Each test removes only what it created (the status tests run inside a transaction that is rolled back). Retrieval integration tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0).
+- Real Docling conversion, the real embedding model, real Gemini and the real DAG are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py`, `scripts/evaluate.py` and `airflow dags list-import-errors` inside the container. Current counts: ROADMAP handoff.
 
 ---
 
 ## 13. Not built yet
 
-Airflow orchestration and the `documents.status` lifecycle (Phase 8), Streamlit UI (9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (DECISIONS D-07, D-33, E-4).
+Streamlit UI (Phase 9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Small known gaps (no list or delete endpoint, no failure-reason column, no attempt counter for documents that kill the worker): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (DECISIONS D-07, D-33, E-4).

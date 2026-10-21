@@ -115,3 +115,9 @@ docker-data/
 # =========================
 *.tmp
 *.temp
+
+# Airflow runtime
+airflow/.env
+airflow/logs/
+airflow/config/
+airflow/plugins/
