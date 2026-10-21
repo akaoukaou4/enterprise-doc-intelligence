@@ -286,6 +286,16 @@
 
 ---
 
+## UI (Phase 9)
+
+### D-47 · Streamlit UI: HTTP client only, list endpoint, own dependency group · Accepted (2026-10-22)
+**Decision.** (1) The UI lives in `ui/`, is a Streamlit app and calls the FastAPI backend over HTTP only; it imports nothing from `app/`. (2) A new endpoint `GET /api/v1/documents` lists documents, newest first, with `limit` and `offset`. (3) No `documents.error` column: the UI shows `failed` and a fixed line that points to the admin log. (4) Streamlit goes in its own uv dependency group, not in the main dependencies. Streamlit version checked 2026-10-21: 1.66.0 (released 2026-10-14), requires Python 3.11 or newer.
+**Why.** (1) The API stays the one contract (I2), and the UI can run in another container or machine in Phases 11 and 12. (2) Without a list the UI forgets every document on a page reload; a list endpoint needs pagination (ENGINEERING_STANDARDS section 3). (3) The reason of a failure is needed by the operator, who can read the Airflow log; a column adds a migration and code for no user. (4) The Airflow image installs from `uv.lock` (D-44); Streamlit pulls pandas, pyarrow and more, which that image never uses.
+**Rejected.** The UI importing the services directly (couples it to the database and the models, cannot be deployed apart). Streamlit in the main dependencies (a heavier Airflow image and a rebuild for nothing). The error column (no measured need). Settles the Phase 9 revisit of D-45.
+**Revisit.** If the UI must show the failure reason (add the column then). Phase 11: the UI as its own container. If `uv sync --no-dev` does not leave the UI group out of the Airflow image, fix that before the tag (checked in step 4).
+
+---
+
 ## Evidence
 
 ### E-1 · Phase 6 refusal measurements (manual, through the running API, `gemini-3.5-flash-lite`)

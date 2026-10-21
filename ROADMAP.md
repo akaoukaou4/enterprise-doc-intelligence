@@ -7,24 +7,25 @@
 
 ## Handoff (read this first)
 
-Updated: 2026-10-21, after Phase 8 (tag `phase-8`).
+Updated: 2026-10-22, Phase 9 in progress (last tag: `phase-8`).
 
 - **Product:** upload PDFs, ask questions, get grounded answers with document, page and section citations, or a clear "not found".
-- **Current phase:** Phase 8 is complete. **Phase 9 (Streamlit UI) is next and not started.**
-- **What works today:** upload (`POST /api/v1/documents`) now leads to ingestion by itself. Airflow, started from the `airflow/` folder, checks every minute for `uploaded` documents, ingests them one at a time with `IngestionService`, and sets `documents.status` (`uploaded`, `processing`, `processed`, `failed`). Also: ingestion by hand (`scripts/ingest_document.py`, `scripts/ingest_folder.py`, both set the status too), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), and the evaluation runner (`scripts/evaluate.py`). Last verified: 212 tests pass, Ruff clean (`scripts/check.ps1`).
-- **What does not exist yet:** UI, Docker image for the app, AWS, Terraform. No list or delete endpoint for documents. No column for the failure reason (it is only in the Airflow task log).
-- **Airflow in daily use:** the root `docker compose up -d` starts only PostgreSQL and MinIO. Airflow has its own compose: `cd airflow; docker compose up -d`, UI at http://localhost:8080 (login `airflow` / `airflow`). The DAG `ingest_documents` is created paused: unpause it once, and pause it when you stop working. Details: README.
-- **Data state:** the 14 corpus PDFs in `data/corpus/` are all `processed` in the local database (302 chunks). Alembic head `8c1d5e7a2b96` (sets old ingested documents to `processed`). Evaluation set: `data/eval/questions.json` (version 5, 52 questions). Kept runs: `data/eval/results/`. Numbers: DECISIONS E-4 (evaluation) and E-5 (Airflow).
+- **Current phase:** Phase 9 (Streamlit UI), step 2 of 5 (docs step). The plan and exit conditions are in the Phase 9 section below.
+- **What works today:** upload (`POST /api/v1/documents`) leads to ingestion by itself. Airflow, started from `airflow/`, checks every minute for `uploaded` documents, ingests them one at a time and sets `documents.status` (`uploaded`, `processing`, `processed`, `failed`). Also: ingestion by hand (`scripts/ingest_document.py`, `scripts/ingest_folder.py`, both set the status), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), the evaluation runner (`scripts/evaluate.py`). Last verified: 212 tests pass, Ruff clean (`scripts/check.ps1`).
+- **What does not exist yet:** UI, list or delete endpoint for documents, Docker image for the app, AWS, Terraform. No column for the failure reason (it is only in the Airflow task log).
+- **Airflow in daily use:** the root `docker compose up -d` starts only PostgreSQL and MinIO. Airflow has its own compose: `cd airflow; docker compose up -d`, UI at http://localhost:8080 (login `airflow` / `airflow`). The DAG `ingest_documents` is created paused: unpause it once, pause it when you stop working. Details: README.
+- **Data state:** the 14 corpus PDFs in `data/corpus/` are all `processed` in the local database (302 chunks). Alembic head `8c1d5e7a2b96`. Evaluation set: `data/eval/questions.json` (version 5, 52 questions). Kept runs: `data/eval/results/`. Numbers: DECISIONS E-4 (evaluation) and E-5 (Airflow).
 - **LLM:** `gemini-3.5-flash-lite` on the Gemini API free tier. Limits: `docs/provider_limits.md`. Data-use terms: DECISIONS D-36.
 - **Rules in force:**
   - Only fictional or openly licensed documents may go to Gemini (free tier may use the data). The ISO 27001 PDF stays local.
-  - No similarity threshold (D-33, E-4), hybrid search, reranking or vector index: Phase 7 showed no need.
+  - No similarity threshold (D-33), hybrid search, reranking or vector index: Phase 7 showed no need (E-4).
   - Any change to chunking, embeddings, the prompt or `top_k`: rerun `scripts/evaluate.py` and compare with `data/eval/results/`. One change per experiment.
   - The AI never writes citations; code builds them from stored chunks.
-  - Airflow only schedules and runs; ingestion and status logic stay in `app/` (D-45). The Airflow container reads `app/` and `scripts/` from the repository (read-only mount): a code change needs no rebuild, a change of `pyproject.toml` or `uv.lock` needs `docker compose build` in `airflow/`.
+  - Airflow only schedules and runs; ingestion and status logic stay in `app/` (D-45). A change of `pyproject.toml` or `uv.lock` needs `docker compose build` in `airflow/`; a change in `app/` or `scripts/` does not.
+  - The UI is an HTTP client of the API and imports nothing from `app/` (D-47).
   - Resources: the Docker VM has 8 GB. One ingestion peaks at about 5.2 GB (E-5): close heavy apps while it runs.
-- **Next action (Phase 9, step 1):** the 30-minute radar on Streamlit (current stable version, how to run it locally and call the FastAPI backend), then design the screens: upload, status, ask, answer with sources. Decide whether a list-documents endpoint is needed.
-- **Open questions:** does the UI need a list endpoint, and a failure reason for `failed` documents (a `documents.error` column)? Decide in Phase 9, step 1.
+- **Next action (Phase 9, step 2b):** compress DECISIONS under its size budget (settled old records to one line each, evidence kept), then ARCHITECTURE (2c), then README (2d), one file per message.
+- **Open questions:** none for Phase 9 (settled in D-47).
 - **Checks:** run `scripts/check.ps1` before every push. The pre-push hook runs it too.
 - **Opening line for the new chat:** `Continue from the ROADMAP handoff.`
 - **Documents:** README (use), ROADMAP (this), ARCHITECTURE (system now), DECISIONS (why), PROJECT (scope). Working rules live in the private kit, loaded by the Project instructions.
@@ -44,7 +45,7 @@ Updated: 2026-10-21, after Phase 8 (tag `phase-8`).
 | 6 | Gemini + RAG | done | grounded answer with citations, or a clear refusal |
 | 7 | Evaluation | done | repeatable measurement of quality |
 | 8 | Airflow | done | ingestion starts by itself after upload; same logic directly and through Airflow |
-| 9 | Streamlit UI | **next** | full use without calling the API by hand |
+| 9 | Streamlit UI | **in progress** | full use without calling the API by hand |
 | 10 | Complete local system | planned | everything works together locally |
 | 11 | Containerization | planned | clean environment starts with Docker |
 | 12 | AWS deployment | planned | core workflow works remotely |
@@ -52,34 +53,38 @@ Updated: 2026-10-21, after Phase 8 (tag `phase-8`).
 | 14 | Production quality | planned | logging, monitoring, reliability, improvements justified by evaluation |
 | 15 | Portfolio | planned | repo understandable by a stranger |
 
-Completed phases are not re-described here. For what each one built, read ARCHITECTURE. For why, read DECISIONS. Git tags mark the end of phases (`phase-N`).
+Completed phases are not re-described here. For what each one built, read ARCHITECTURE. For why, read DECISIONS (Phase 8: D-43 to D-46, E-5). Git tags mark the end of phases (`phase-N`).
 
 **Milestones reached:** 1 backend foundation (end of Phase 2), 2 AI knowledge pipeline (Phase 4), 3 working AI assistant (Phase 6), 4 evaluated system (Phase 7), 5 automated ingestion (Phase 8).
 **Milestones ahead:** 6 complete local product (Phase 10), 7 cloud deployment (Phase 13).
 
 ---
 
-## Phase 8: Airflow (done)
-
-**Goal:** ingestion starts by itself after upload and runs through Airflow with the same `IngestionService` logic; `documents.status` always tells the truth.
-
-**Built:** a separate Airflow stack in `airflow/` (own compose, custom image, DAG `ingest_documents`); the status lifecycle in app code (`app/services/document_status.py`, `scripts/claim_documents.py`), used by Airflow and by both ingestion scripts; a migration that marks already ingested documents `processed`; tests for the status logic and the DAG helpers. Reasons: DECISIONS D-43 to D-46. Numbers: E-5. How to run it: README, "Airflow".
-
-**Result in one line:** a PDF uploaded through the API became `processed` by itself in 3 min 51 s, produced the same chunks as the direct run (11 of 11 equal texts and pages, vector distance 0.000000), a corrupt PDF ended `failed`, and a worker killed in the middle recovered by itself.
-
-**Known limits** (accepted, in the backlog): the failure reason is only in the Airflow log; a document that kills the worker is reset and retried at every run; the reset of stuck documents assumes no manual ingestion runs at the same time; up to 60 s pass between upload and the start of ingestion (polling).
-
-**Exit conditions met:** (1) Airflow starts from its own compose and the UI opens; (2) upload to `processed` within 5 minutes with no manual script; (3) a corrupt PDF ends `failed` and is not claimed again; (4) direct and Airflow ingestion give the same chunks; (5) unit tests for the status logic and the DAG helpers, the DAG imports without errors in the container (`airflow dags list-import-errors`), `scripts/check.ps1` passes (212 tests), CI green at the tag.
-
----
-
-## Phase 9: Streamlit UI
+## Phase 9: Streamlit UI (in progress)
 
 **Goal:** upload, see processing status, ask, read the answer and its sources. Simple on purpose; not a frontend project.
 
-- Upload now starts ingestion by itself (Phase 8), so the UI only needs to show the status: `uploaded`, `processing`, `processed`, `failed`. `GET /api/v1/documents/{id}` already returns it.
+**Limit:** about 40 exchanges. At the limit: cut scope, or extend with a written reason.
 
-**Exit:** the full workflow without calling the API by hand. May need a list-documents endpoint and a failure reason (decide then).
+**Design (D-47):** one page, three parts. (1) Upload: file picker and upload button. (2) Documents: file name, status, date; refreshes by itself while a document is `uploaded` or `processing`. (3) Ask: question box, `top_k` in an expander, answer with citations (file, pages, section, chunk text); `found: false` shows a clear "not found"; an API error shows a short message.
+
+**Steps:**
+1. Radar and design. Done (D-47).
+2. Docs step: write this plan and D-47 (2a, done), then compress DECISIONS (2b), ARCHITECTURE (2c), README (2d).
+3. `GET /api/v1/documents` (newest first, `limit` and `offset`) with tests; ARCHITECTURE and README updated in the same commit.
+4. Streamlit app in `ui/`, calling the API over HTTP, in its own uv dependency group.
+5. End-to-end check by hand, `scripts/check.ps1`, docs, ripple check, tag `phase-9`.
+
+**Exit conditions:**
+1. A PDF uploaded in the browser reaches `processed` without reloading the page.
+2. A question shows the answer with its citations.
+3. A `found: false` answer shows a clear "not found".
+4. With the API stopped, the UI shows a clear message, not a stack trace.
+5. `scripts/check.ps1` passes and CI is green at the tag.
+
+**Notes for step 4:** check the `st.file_uploader` size limit against `MAX_UPLOAD_MB` (20); check that `uv sync --no-dev` leaves the UI group out of the Airflow image (rebuild once and look).
+
+---
 
 ## Phase 10: Complete local system
 
@@ -92,6 +97,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 - The image is large (Docling, CPU PyTorch, sentence-transformers). Models need a persistent volume or a build step. Phase 8 already built such an image for Airflow (`airflow/Dockerfile`: the app in its own virtual environment from `uv.lock`); reuse that approach. There the code is mounted, not baked: an app image must bake it.
 - `HF_TOKEN` and `GEMINI_API_KEY` are secrets passed at runtime, never baked into an image or committed.
 - First request loads the embedding model lazily (about 22 s, mostly update checks to huggingface.co). In containers run offline with a pre-downloaded model; decide then between preloading at startup and lazy loading.
+- The UI becomes its own small container (it only needs Streamlit and an HTTP client).
 
 ## Phase 12: AWS deployment
 
@@ -123,16 +129,16 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 
 ## Backlog (small items, no phase yet)
 
-- List and delete endpoints for documents (cleanup needed SQL and the MinIO console).
-- Ripple-check script: search all docs for a changed term. Do it with the docs compression step early in Phase 9.
+- Delete endpoint for documents (cleanup needs SQL and the MinIO console). The list endpoint is in Phase 9 step 3.
+- Ripple-check script: search all docs for a changed term (the standards say automate it once it has failed twice).
 - Security pass before Phase 12: upload size and type limits, an authentication decision, one prompt-injection case in the evaluation set.
 - Structured logs (request id, latency, token counts): Phase 10.
 - Second-model check of the evaluation before any "evaluated system" claim on a CV.
-- Failure reason: stored only in the Airflow task log. If the UI must show it, add a `documents.error` column (Phase 9 decides).
+- Failure reason: only in the Airflow task log. Add a `documents.error` column only if a real need appears (D-47).
 - Models in the Airflow image: the embedding model is in the `hf-cache` volume, but the RapidOCR models (about 100 s of download) live in the container layer and are fetched again when the container is recreated. Check Docling's documented way to pre-download them first. Natural place: Phase 11.
 - Ingestion edge cases: a document that kills the worker is reset and retried at every run (no attempt counter); the reset of stuck documents assumes no manual ingestion runs at the same time.
 - Cold start: the first run of an ingestion task took about 66 s before the work started, a retry only 9 s (E-5). Disk cache on the HDD is the suspected cause, not proven. Measure again on an SSD or on AWS before tuning anything.
-- Docs over the size budget (ENGINEERING_STANDARDS section 13): README about 13.6 KB (budget 8), ARCHITECTURE about 26 KB (20), DECISIONS about 44 KB (30). Compress settled old records and repeated detail, never only append. One docs-only step early in Phase 9.
+- Docs over the size budget (ENGINEERING_STANDARDS section 13): README about 13.6 KB (budget 8), ARCHITECTURE about 26 KB (20), DECISIONS about 44 KB (30). Phase 9 step 2b to 2d.
 - Model loading lock (two simultaneous first requests may both load the model; harmless for one developer).
 - Map `ValueError` from services to an HTTP error for callers that skip the schemas.
 - Check accent display in PowerShell 5.1.
