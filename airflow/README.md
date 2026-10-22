@@ -49,7 +49,7 @@ docker compose exec airflow-scheduler airflow dags list-import-errors
 
 ## Daily use
 
-Start: `docker compose up -d`. The DAG keeps the paused or unpaused state it had when you stopped. An unpaused DAG polls every minute as soon as the stack is up.
+Start: `docker compose up -d`. The DAG keeps the paused or unpaused state it had when you stopped. An unpaused DAG polls every minute as soon as the stack is up. `airflow-init` shows `Exited` after a start: that is normal, it only runs once.
 
 **When you stop working**, pause the DAG, then stop the stack:
 
@@ -61,7 +61,7 @@ docker compose exec airflow-scheduler airflow dags pause ingest_documents
 docker compose down
 ```
 
-If the first command says `service "airflow-scheduler" is not running`, the stack is already stopped and there is nothing to pause. Start it again and pause the DAG if you do not want polling.
+If the first command says `service "airflow-scheduler" is not running`, the stack is already stopped and there is nothing to pause.
 
 Never run `docker compose down -v` unless you mean it: it deletes the `hf-cache` volume (a download of about 12 minutes) and the Airflow history.
 

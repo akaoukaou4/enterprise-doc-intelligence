@@ -3,13 +3,13 @@
 **Question this file answers:** how does the system work **today**?
 **Not here:** the plan (ROADMAP), the reasons behind choices (DECISIONS), how to run it (README), scope (PROJECT).
 
-Written in the present tense. If something is not built yet, it is listed once in section 13 and nowhere else. Status as of the end of Phase 8 (2026-10-21). Compressed 2026-10-22; the long version is in Git at the tag `architecture-before-compress`.
+Written in the present tense. If something is not built yet, it is listed once in section 14 and nowhere else. Status as of the end of Phase 9 (2026-10-23). Compressed 2026-10-22; the long version is in Git at the tag `architecture-before-compress`.
 
 ---
 
 ## 1. Style and invariants
 
-The system is a **modular monolith**: one Python application in layers, plus PostgreSQL and MinIO as containers, and an Airflow stack that runs the ingestion. No microservices (D-02).
+The system is a **modular monolith**: one Python application in layers, plus PostgreSQL and MinIO as containers, an Airflow stack that runs the ingestion, and a small Streamlit UI that is a client of the API. No microservices (D-02).
 
 These **invariants** hold in every change. A change that breaks one needs a new decision in DECISIONS first.
 
@@ -29,29 +29,33 @@ These **invariants** hold in every change. A change that breaks one needs a new 
 | I12 | Automated tests never call Gemini. |
 | I13 | Only fictional or openly licensed documents are sent to Gemini (free tier may use the data). |
 | I14 | After the upload, `documents.status` changes only through `DocumentStatusService`. Airflow, the scripts and the API never write it directly. The DAG holds no ingestion logic: it only runs scripts. |
+| I15 | The UI talks to the API over HTTP only and imports nothing from `app/`. |
 
 ---
 
 ## 2. System overview
 
 ```text
-                    USER (today: Swagger UI, curl, scripts)
+                    USER (browser; also Swagger UI, curl, scripts)
                               │
                               ▼
+                  Streamlit UI (ui/, port 8501)
+                              │  HTTP only (I15)
+                              ▼
                           FastAPI
-        POST /documents   POST /search   POST /ask   GET /health...
-              │               │             │
-              ▼               ▼             ▼
-       DocumentService   RetrievalService  RagService
-              │               │             │  ├─ rag_prompt (numbered sources)
-              │               │             │  └─ LlmService ──► Gemini API
-              │               ▼             │
-              │         EmbeddingService ◄──┘   (EmbeddingGemma, CPU, in process)
-              │               │
-              ▼               ▼
-         StorageService   PostgreSQL + pgvector
-         boto3 → MinIO    documents (with status), document_chunks
-                          (S3 on AWS)
+        POST /documents   GET /documents   POST /search   POST /ask   GET /health...
+              │               │               │             │
+              ▼               ▼               ▼             ▼
+       DocumentService (upload, list)   RetrievalService  RagService
+              │                               │             │  ├─ rag_prompt (numbered sources)
+              │                               │             │  └─ LlmService ──► Gemini API
+              │                               ▼             │
+              │                         EmbeddingService ◄──┘   (EmbeddingGemma, CPU, in process)
+              │                               │
+              ▼                               ▼
+         StorageService                PostgreSQL + pgvector
+         boto3 → MinIO                 documents (with status), document_chunks
+         (S3 on AWS)
 
    Ingestion, automatic (Airflow, own compose in airflow/):
    DAG ingest_documents, every minute
@@ -65,7 +69,7 @@ These **invariants** hold in every change. A change that breaks one needs a new 
    scripts/evaluate.py ─► RetrievalService (+ RagService in full mode) ─► data/eval/runs/*.json
 ```
 
-The root Docker Compose runs PostgreSQL (`pgvector/pgvector:pg18`, host port 5433), MinIO (ports 9000 and 9001) and a one-time `minio-init` container that creates the `documents` bucket. The API runs on the host.
+The root Docker Compose runs PostgreSQL (`pgvector/pgvector:pg18`, host port 5433), MinIO (ports 9000 and 9001) and a one-time `minio-init` container that creates the `documents` bucket. The API and the UI run on the host.
 
 The Airflow stack has its own compose (`airflow/docker-compose.yaml`, D-43): api-server (UI on port 8080), scheduler, dag-processor and its own `postgres:16` for metadata, with LocalExecutor. Its image holds the app's dependencies in a separate virtual environment; `app/` and `scripts/` are mounted read-only (D-44). Ingestion and the embedding model run inside the scheduler container, which reaches PostgreSQL and MinIO on the host through `host.docker.internal`.
 
@@ -83,7 +87,8 @@ app/
 ├── evaluation/          questions, metrics, runner, report (scoring and reports; no database or model code)
 ├── pipeline/            models.py (Chunk), extract.py, chunk.py, clean.py, process.py
 └── schemas/             health, errors, info, documents, search, ask
-airflow/                 docker-compose.yaml, Dockerfile, dags/ (ingest_documents.py, ingest_helpers.py); .env, logs/, config/, plugins/ are git-ignored
+ui/                      app.py (the Streamlit page), api_client.py (the HTTP client of the API)
+airflow/                 docker-compose.yaml, Dockerfile, README.md, dags/ (ingest_documents.py, ingest_helpers.py); .env, logs/, config/, plugins/ are git-ignored
 migrations/              Alembic (env.py reads the URL from Settings); versions/ excluded from Ruff
 scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, ingest_folder, claim_documents, smoke_gemini, evaluate, check.ps1
 tests/unit/              fakes; run everywhere including CI
@@ -91,7 +96,6 @@ tests/integration/       real PostgreSQL and MinIO; skip themselves when unavail
 data/corpus/             the fictional test corpus (14 policy PDFs, committed; origin in SOURCES.md, D-40)
 data/eval/               questions.json (the evaluation set), results/ (kept runs), runs/ (scratch, git-ignored)
 docs/                    provider_limits.md (free-tier limits of the LLM, with the date they were checked)
-ui/                      reserved for the Streamlit UI (Phase 9)
 ```
 
 Scripts that import `app` run as modules from the project root: `uv run python -m scripts.run_pipeline`. Test file names must be unique across `tests/` (no `__init__.py`).
@@ -240,7 +244,7 @@ PDF ─► extract (Docling, converter created once and cached)
 - Model: EmbeddingGemma (`google/embeddinggemma-300m`), set by `EMBEDDING_MODEL_ID` and read by both the chunker tokenizer and the embedding service (D-06). A model with another vector size needs a new migration.
 - `embed_documents(chunks)` embeds `title: <heading or none> | text: <chunk text>` (D-13) and returns one normalized 768-dimensional vector per chunk, in order.
 - `embed_query(question)` uses the model's query prompt.
-- The model loads lazily on first use (about 22 s the first time, mostly update checks to huggingface.co), on CPU, through `sentence-transformers`. A dimension check at load rejects a model that does not produce 768 values. There is no loading lock (D-21).
+- The model loads lazily on first use, on CPU, through `sentence-transformers`: about 34 s in the API on the development machine (D-48), mostly update checks to huggingface.co and loading the weights. A dimension check at load rejects a model that does not produce 768 values. There is no loading lock (D-21).
 - The model is gated: accept the license and run `uv run hf auth login` once; the token is stored under `HF_HOME`, outside the repository. In the Airflow container the token is `HF_TOKEN` from `airflow/.env`, and the model cache is the named volume `hf-cache`.
 
 `ChunkService.replace_chunks(document_id, chunks, vectors)` validates that counts match and every vector has 768 values, then deletes the document's old chunks and inserts the new ones in one transaction. A failure rolls back and keeps the old chunks. It does not touch `documents.status` (D-22).
@@ -287,9 +291,11 @@ One typed `Settings` object (`app/core/config.py`) reads environment variables a
 | Embeddings | `EMBEDDING_MODEL_ID` (has a default) |
 | LLM | `GEMINI_API_KEY` (secret), `GEMINI_MODEL` (has a default) |
 
-The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` = 1000) are constants in `retrieval.py`, not settings: they are tuned with evaluation data, not per environment. The Hugging Face token is not a setting: `hf auth login` stores it, or deployments supply `HF_TOKEN`. Secrets live only in `.env` (git-ignored) and the environment; `.env.example` holds placeholders.
+The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` = 1000) and the list limits (`DEFAULT_LIST_LIMIT` = 20, `MAX_LIST_LIMIT` = 100) are constants in the services, not settings: they are tuned with data, not per environment. The Hugging Face token is not a setting: `hf auth login` stores it, or deployments supply `HF_TOKEN`. Secrets live only in `.env` (git-ignored) and the environment; `.env.example` holds placeholders.
 
 **Airflow** has its own git-ignored `airflow/.env`: `AIRFLOW_UID`, `FERNET_KEY`, and the app variables ingestion needs (`DATABASE_URL` and `MINIO_ENDPOINT` pointing at the host, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `HF_TOKEN`). No `GEMINI_API_KEY`: ingestion never calls Gemini (I13). Airflow's own settings (executor, parallelism, paused DAGs) are in `airflow/docker-compose.yaml`.
+
+**UI.** The only setting is the environment variable `API_URL` (default `http://localhost:8000`), read by `ui/api_client.py`. It is not part of `Settings`, because the UI imports nothing from `app/` (I15).
 
 ---
 
@@ -300,14 +306,26 @@ The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` =
 - Docker Desktop runs on WSL 2 with a memory limit of 8 GB (`.wslconfig`). One ingestion peaks at about 5.2 GB (E-5): close heavy applications while it runs.
 - Quality gates: `scripts/check.ps1` (Ruff, pytest), pre-commit (including a secret scanner), a pre-push hook, GitHub Actions CI on every push.
 - Airflow is started and stopped on its own from `airflow/` (`airflow/README.md`). The DAG is created paused and must be unpaused once; pause it when you stop working.
+- The UI starts with `uv run --group ui streamlit run ui/app.py` from the project root (README).
 
 **Tests** (D-26, D-37)
-- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The status runner is tested with a fake ingestor; the DAG helpers are loaded by file path, since CI has no Airflow.
-- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when those are unavailable. Each removes only what it created (the status tests run inside a rolled-back transaction). Retrieval tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0).
-- Real Docling conversion, the real embedding model, real Gemini and the real DAG are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py`, `scripts/evaluate.py` and `airflow dags list-import-errors` inside the container. Current test counts: ROADMAP handoff.
+- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services, the HTTP session of the UI client), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The status runner is tested with a fake ingestor; the DAG helpers and the UI client are loaded by file path (CI has no Airflow, and `ui/` is not a package).
+- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when those are unavailable. Each removes only what it created (the status tests run inside a rolled-back transaction). Retrieval tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0). The list tests use documents dated 2099 with status `processed`, so they sort first and the Airflow DAG never claims them.
+- Real Docling conversion, the real embedding model, real Gemini, the real DAG and the Streamlit screens are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py`, `scripts/evaluate.py`, `airflow dags list-import-errors` inside the container, and the UI itself. Current test counts: ROADMAP handoff.
 
 ---
 
-## 13. Not built yet
+## 13. UI (`ui/`)
 
-Streamlit UI (Phase 9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Small known gaps (no delete endpoint, no failure-reason column, no attempt counter for documents that kill the worker): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (D-07, D-33, E-4).
+A Streamlit page, one screen with three parts, built as a client of the API (I15, D-47, D-48).
+
+- **`ui/api_client.py`** is the only code that speaks HTTP. `ApiClient` has `upload_document`, `list_documents` and `ask`; timeouts are 15 s (list), 60 s (upload) and 90 s (ask). Every failure becomes an `ApiError` with a short message safe to show ("Cannot reach the API. Is it running?", or the message of the API's own error shape). The UI never shows a stack trace.
+- **`ui/app.py`** draws three parts. (1) Upload: a PDF picker and a button; a message confirms the upload. (2) Documents: a table of the newest 50 (file, status, upload time), a fragment that refreshes every 3 s only while a document is `uploaded` or `processing`; a warning appears when a document is `failed`, pointing to the administrator. (3) Ask: a form (button or Ctrl+Enter), an expander with `top_k` (empty means the server default), the answer, and one expander per source with file, pages, section and the chunk text. `found: false` shows a warning box and no sources. The last answer is kept in the session state.
+- **Dependencies:** the `ui` group of `pyproject.toml` (Streamlit and `requests`). It is not part of the Airflow image (`uv sync --no-dev` leaves it out; checked in D-48).
+- **Known limits:** the file picker shows Streamlit's default 200 MB limit while the API refuses over 20 MB with a clear message; the first question after the API starts waits about 35 s while the embedding model loads (the spinner says so); the screens have no automated tests, only the client has.
+
+---
+
+## 14. Not built yet
+
+Application container image (Phase 11), AWS (12), Terraform (13). Plan and order: ROADMAP. Small known gaps (no delete endpoint, no failure-reason column, no attempt counter for documents that kill the worker, no automated tests of the UI screens): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (D-07, D-33, E-4).

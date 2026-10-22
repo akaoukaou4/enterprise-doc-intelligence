@@ -23,8 +23,9 @@ Citations are built by code from the stored chunks; the model only says which nu
 | Document processing | Docling, HybridChunker (CPU-only PyTorch) |
 | AI | EmbeddingGemma (local embeddings), Gemini API (generation), RAG |
 | Orchestration | Apache Airflow 3 (LocalExecutor, Docker Compose) |
+| UI | Streamlit (a client of the API over HTTP) |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
-| Planned | Streamlit, Docker image for the app, AWS (EC2, RDS, S3), Terraform |
+| Planned | Docker image for the app, AWS (EC2, RDS, S3), Terraform |
 
 ## Getting started
 
@@ -63,7 +64,7 @@ The token is saved under `HF_HOME`, outside the repository. Never commit it.
 uv run python -m scripts.smoke_gemini
 ```
 
-**Privacy.** On the free tier Google may use prompts and responses to improve its products. Send only fictional, openly licensed or non-sensitive documents through `/ask`; only `/ask` calls Gemini. Limits and the current model: [DECISIONS.md](DECISIONS.md) (D-28, D-36), `docs/provider_limits.md`.
+**Privacy.** On the free tier Google may use prompts and responses to improve its products. Send only fictional, openly licensed or non-sensitive documents through `/ask` (and upload only such documents in the UI); only `/ask` calls Gemini. Limits and the current model: [DECISIONS.md](DECISIONS.md) (D-28, D-36), `docs/provider_limits.md`.
 
 **Caches (recommended on Windows).** To keep large downloads off C:, set these once and open a new terminal:
 
@@ -79,7 +80,19 @@ uv run python -m scripts.smoke_gemini
 
 Ingestion starts by itself through Apache Airflow, which has its own Docker Compose in `airflow/`. Setup, start, stop and troubleshooting: [airflow/README.md](airflow/README.md). Start the root stack first (`docker compose up -d`): Airflow reads PostgreSQL and MinIO on your computer.
 
+### Streamlit UI
+
+With the API running (step 5 above), start the UI in a second terminal, from the project root:
+
+```powershell
+uv run --group ui streamlit run ui/app.py
+```
+
+Streamlit asks for an email address the first time: press Enter to skip. The page opens at http://localhost:8501 and has three parts: upload a PDF; the document list with its status, which refreshes by itself while a document waits or is processed; and a question box that shows the answer with its sources. If the API runs somewhere else, set the environment variable `API_URL` (default `http://localhost:8000`).
+
 ## Usage
+
+The UI covers upload, status and questions. The API calls below do the same by hand.
 
 ### 1. Upload a PDF
 
@@ -154,7 +167,7 @@ function Ask($q) {
 Ask "How many vacation days do employees get per year?"
 ```
 
-The first question after the server starts is slow (the embedding model loads). PowerShell 5.1 can display accents wrongly: check an accented answer in `/docs` before suspecting the code. If Gemini is unreachable, out of quota or returns something unusable, `/ask` returns `502` with the standard error shape; the reason is in the server log.
+The first question after the API starts is slow, about 35 s (the embedding model loads). PowerShell 5.1 can display accents wrongly: check an accented answer in `/docs` before suspecting the code. If Gemini is unreachable, out of quota or returns something unusable, `/ask` returns `502` with the standard error shape; the reason is in the server log.
 
 ### Inspect retrieval without Gemini
 
@@ -202,7 +215,7 @@ Run before every push (the pre-push hook runs it too): Ruff, format check and al
 .\scripts\check.ps1
 ```
 
-Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers and skip themselves when unavailable. Test file names must be unique across `tests/`. CI has no Airflow: the DAG itself is checked in the container with `airflow dags list-import-errors`.
+Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers and skip themselves when unavailable. Test file names must be unique across `tests/`. CI has no Airflow: the DAG itself is checked in the container with `airflow dags list-import-errors`. The UI's API client has unit tests; the Streamlit screens are checked by hand.
 
 ## Known limitations
 
@@ -211,6 +224,7 @@ Unit tests use fakes: no Docling or embedding model, no database, and they never
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (E-4).
 * No delete endpoint for documents.
 * Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
+* The UI's file picker shows Streamlit's default 200 MB limit; the API refuses files over 20 MB with a clear message.
 
 Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and the backlog in [ROADMAP.md](ROADMAP.md).
 
@@ -220,3 +234,4 @@ Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and t
 * [ARCHITECTURE.md](ARCHITECTURE.md): how the system works today
 * [DECISIONS.md](DECISIONS.md): why each choice was made
 * [ROADMAP.md](ROADMAP.md): plan and progress
+* [airflow/README.md](airflow/README.md): running Airflow
