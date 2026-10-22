@@ -104,22 +104,35 @@ def render_answer(result: dict) -> None:
 
 def ask_section(client: ApiClient) -> None:
     st.subheader("3. Ask a question")
-    question = st.text_area("Your question", height=100)
-    with st.expander("Advanced"):
-        # The API enforces the real limits; empty means the server default.
-        top_k = st.number_input(
-            "Chunks retrieved (top_k), empty = default", min_value=1, max_value=20, value=None
-        )
+    # A form sends the question only on submit (the button or Ctrl+Enter), so the
+    # button needs no "disabled" state waiting for the text box to lose focus.
+    with st.form("ask_form", border=False):
+        question = st.text_area("Your question", height=100)
+        with st.expander("Advanced"):
+            # The API enforces the real limits; empty means the server default.
+            top_k = st.number_input(
+                "Chunks retrieved (top_k), empty = default",
+                min_value=1,
+                max_value=20,
+                value=None,
+            )
+        submitted = st.form_submit_button("Ask")
 
-    if st.button("Ask", disabled=not question.strip()):
-        try:
-            with st.spinner("Searching the documents..."):
-                result = client.ask(question.strip(), int(top_k) if top_k else None)
-        except ApiError as error:
-            st.session_state.pop("answer", None)
-            st.error(str(error))
-            return
-        st.session_state["answer"] = result
+    if submitted:
+        if not question.strip():
+            st.warning("Type a question first.")
+        else:
+            try:
+                with st.spinner(
+                    "Searching the documents... "
+                    "the first question after a server start can take up to a minute."
+                ):
+                    result = client.ask(question.strip(), int(top_k) if top_k else None)
+            except ApiError as error:
+                st.session_state.pop("answer", None)
+                st.error(str(error))
+                return
+            st.session_state["answer"] = result
 
     if "answer" in st.session_state:
         render_answer(st.session_state["answer"])
