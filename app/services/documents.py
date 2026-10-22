@@ -2,6 +2,7 @@ import logging
 import uuid
 from pathlib import PurePath
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -14,6 +15,11 @@ logger = logging.getLogger(__name__)
 PDF_CONTENT_TYPE = "application/pdf"
 PDF_MAGIC = b"%PDF-"
 MAX_FILENAME_LENGTH = 255
+
+# Page size of the list endpoint. A maximum protects the database; the API
+# returns 422 outside the range, and the service refuses it too.
+DEFAULT_LIST_LIMIT = 20
+MAX_LIST_LIMIT = 100
 
 
 class DocumentService:
@@ -60,6 +66,25 @@ class DocumentService:
         if document is None:
             raise NotFoundError(f"Document not found: {document_id}")
         return document
+
+    def list_documents(
+        self, limit: int = DEFAULT_LIST_LIMIT, offset: int = 0
+    ) -> tuple[list[Document], int]:
+        """Return one page of documents, newest first, and the total count."""
+        if not 1 <= limit <= MAX_LIST_LIMIT:
+            raise ValueError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
+        if offset < 0:
+            raise ValueError("offset must be 0 or more")
+
+        total = self._db.scalar(select(func.count()).select_from(Document)) or 0
+        # id breaks ties, so two pages never overlap or skip a document.
+        rows = self._db.scalars(
+            select(Document)
+            .order_by(Document.created_at.desc(), Document.id)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return list(rows), total
 
     def _validate(self, content_type: str | None, data: bytes) -> None:
         if content_type != PDF_CONTENT_TYPE:

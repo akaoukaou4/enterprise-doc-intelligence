@@ -108,11 +108,12 @@ Routes parse HTTP, call a service and format the response (I2). Business endpoin
 | `GET /health/db` | readiness: the database is reachable |
 | `GET /api/v1/info` | example route → service |
 | `POST /api/v1/documents` | upload a PDF: store the file, insert the row (status `uploaded`), return metadata (201) |
+| `GET /api/v1/documents` | one page of documents, newest first: `{items, total, limit, offset}` |
 | `GET /api/v1/documents/{id}` | metadata of one document, including its current `status` |
 | `POST /api/v1/search` | the most similar chunks for a question (inspection endpoint) |
 | `POST /api/v1/ask` | grounded answer with citations |
 
-There is no list or delete endpoint for documents. The upload does not call Airflow and does not wait for ingestion: the document stays `uploaded` until the DAG claims it, within about a minute. If Airflow is not running, documents wait.
+The list takes `limit` (1 to 100, default 20) and `offset` (0 or more); outside the range it returns `422`. Order is `created_at` descending, then `id`, so pages never overlap (D-47). There is no delete endpoint. The upload does not call Airflow and does not wait for ingestion: the document stays `uploaded` until the DAG claims it, within about a minute. If Airflow is not running, documents wait.
 
 **Dependencies.** `app/api/deps.py` builds services per request, except the `EmbeddingService`, one shared instance (I5, `lru_cache`).
 
@@ -309,4 +310,4 @@ The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` =
 
 ## 13. Not built yet
 
-Streamlit UI (Phase 9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Small known gaps (no list or delete endpoint, no failure-reason column, no attempt counter for documents that kill the worker): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (D-07, D-33, E-4).
+Streamlit UI (Phase 9), application container image (11), AWS (12), Terraform (13). Plan and order: ROADMAP. Small known gaps (no delete endpoint, no failure-reason column, no attempt counter for documents that kill the worker): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (D-07, D-33, E-4).

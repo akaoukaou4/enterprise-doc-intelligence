@@ -10,9 +10,9 @@
 Updated: 2026-10-22, Phase 9 in progress (last tag: `phase-8`).
 
 - **Product:** upload PDFs, ask questions, get grounded answers with document, page and section citations, or a clear "not found".
-- **Current phase:** Phase 9 (Streamlit UI), step 3 of 5 (list endpoint). The plan and exit conditions are in the Phase 9 section below.
-- **What works today:** upload (`POST /api/v1/documents`) leads to ingestion by itself. Airflow, started from `airflow/`, checks every minute for `uploaded` documents, ingests them one at a time and sets `documents.status` (`uploaded`, `processing`, `processed`, `failed`). Also: ingestion by hand (`scripts/ingest_document.py`, `scripts/ingest_folder.py`, both set the status), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), the evaluation runner (`scripts/evaluate.py`). Last verified: 212 tests pass, Ruff clean (`scripts/check.ps1`).
-- **What does not exist yet:** UI, list or delete endpoint for documents, Docker image for the app, AWS, Terraform. No column for the failure reason (it is only in the Airflow task log).
+- **Current phase:** Phase 9 (Streamlit UI), steps 1 to 3 done in code and docs; step 3b (move the Airflow runbook out of README) is open, then step 4. The plan and exit conditions are in the Phase 9 section below.
+- **What works today:** upload (`POST /api/v1/documents`) leads to ingestion by itself. Airflow, started from `airflow/`, checks every minute for `uploaded` documents, ingests them one at a time and sets `documents.status` (`uploaded`, `processing`, `processed`, `failed`). Also: list of documents (`GET /api/v1/documents`, newest first, `limit` and `offset`), ingestion by hand (`scripts/ingest_document.py`, `scripts/ingest_folder.py`, both set the status), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), the evaluation runner (`scripts/evaluate.py`). Last verified: 226 tests pass (none skipped, containers running), Ruff clean (`scripts/check.ps1`).
+- **What does not exist yet:** UI, delete endpoint for documents, Docker image for the app, AWS, Terraform. No column for the failure reason (it is only in the Airflow task log).
 - **Airflow in daily use:** the root `docker compose up -d` starts only PostgreSQL and MinIO. Airflow has its own compose: `cd airflow; docker compose up -d`, UI at http://localhost:8080 (login `airflow` / `airflow`). The DAG `ingest_documents` is created paused: unpause it once, pause it when you stop working. Details: README.
 - **Data state:** the 14 corpus PDFs in `data/corpus/` are all `processed` in the local database (302 chunks). Alembic head `8c1d5e7a2b96`. Evaluation set: `data/eval/questions.json` (version 5, 52 questions). Kept runs: `data/eval/results/`. Numbers: DECISIONS E-4 (evaluation) and E-5 (Airflow).
 - **LLM:** `gemini-3.5-flash-lite` on the Gemini API free tier. Limits: `docs/provider_limits.md`. Data-use terms: DECISIONS D-36.
@@ -24,7 +24,7 @@ Updated: 2026-10-22, Phase 9 in progress (last tag: `phase-8`).
   - Airflow only schedules and runs; ingestion and status logic stay in `app/` (D-45). A change of `pyproject.toml` or `uv.lock` needs `docker compose build` in `airflow/`; a change in `app/` or `scripts/` does not.
   - The UI is an HTTP client of the API and imports nothing from `app/` (D-47).
   - Resources: the Docker VM has 8 GB. One ingestion peaks at about 5.2 GB (E-5): close heavy apps while it runs.
-- **Next action (Phase 9, step 3):** add `GET /api/v1/documents` (newest first, `limit` and `offset`) with tests; update ARCHITECTURE and README in the same commit; move the Airflow runbook from README to `airflow/README.md` (README is over its size budget, see the backlog).
+- **Next action (Phase 9, step 3b):** move the Airflow runbook from README to `airflow/README.md` (README is over its size budget, see the backlog). Then step 4: the Streamlit app in `ui/`.
 - **Open questions:** none for Phase 9 (settled in D-47).
 - **Checks:** run `scripts/check.ps1` before every push. The pre-push hook runs it too.
 - **Opening line for the new chat:** `Continue from the ROADMAP handoff.`

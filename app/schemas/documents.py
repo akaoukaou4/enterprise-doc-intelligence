@@ -14,3 +14,12 @@ class DocumentResponse(BaseModel):
     size_bytes: int
     status: str
     created_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    """One page of documents. total is the count of all documents, not of this page."""
+
+    items: list[DocumentResponse]
+    total: int
+    limit: int
+    offset: int

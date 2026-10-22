@@ -141,6 +141,12 @@ curl.exe -F "file=@C:\path\to\your.pdf;type=application/pdf" http://localhost:80
 
 The response has the document `id` and its `status` (`uploaded`). `GET /api/v1/documents/<id>` returns its current status. Non-PDF, empty and over-`MAX_UPLOAD_MB` (default 20) files are rejected.
 
+`GET /api/v1/documents` lists documents, newest first, as `{items, total, limit, offset}` (`limit` 1 to 100, default 20; `offset` from 0):
+
+```powershell
+curl.exe "http://localhost:8000/api/v1/documents?limit=5&offset=0"
+```
+
 ### 2. Ingestion
 
 With Airflow running and the DAG unpaused, nothing more is needed. Within about a minute the status moves on:
@@ -253,7 +259,7 @@ Unit tests use fakes: no Docling or embedding model, no database, and they never
 * Text and tables inside images are unreliable; a table can lose its header row or split across chunks. Some headings are wrong or missing, so the page number is the most reliable part of a citation.
 * No similarity threshold: the model decides when to answer "not found" and a code check rejects answers without a valid citation. On the evaluation set it refused every question the documents cannot answer.
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (E-4).
-* No list or delete endpoint for documents.
+* No delete endpoint for documents.
 * Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
 
 Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and the backlog in [ROADMAP.md](ROADMAP.md).
