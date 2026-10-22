@@ -34,7 +34,12 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=8.0.0",
     "pytest-cov>=7.1.0",
+    "requests>=2.34.2",
     "ruff>=0.16.10",
+]
+ui = [
+    "requests>=2.34.2",
+    "streamlit>=1.66.1",
 ]
 
 [tool.ruff]
