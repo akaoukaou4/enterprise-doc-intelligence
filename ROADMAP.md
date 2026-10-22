@@ -24,7 +24,7 @@ Updated: 2026-10-22, Phase 9 in progress (last tag: `phase-8`).
   - Airflow only schedules and runs; ingestion and status logic stay in `app/` (D-45). A change of `pyproject.toml` or `uv.lock` needs `docker compose build` in `airflow/`; a change in `app/` or `scripts/` does not.
   - The UI is an HTTP client of the API and imports nothing from `app/` (D-47).
   - Resources: the Docker VM has 8 GB. One ingestion peaks at about 5.2 GB (E-5): close heavy apps while it runs.
-- **Next action (Phase 9, step 3):** add `GET /api/v1/documents` (newest first, `limit` and `offset`) with tests; update ARCHITECTURE, README and the backlog size line in the same commit; move the Airflow runbook from README to `airflow/README.md`.
+- **Next action (Phase 9, step 3):** add `GET /api/v1/documents` (newest first, `limit` and `offset`) with tests; update ARCHITECTURE and README in the same commit; move the Airflow runbook from README to `airflow/README.md` (README is over its size budget, see the backlog).
 - **Open questions:** none for Phase 9 (settled in D-47).
 - **Checks:** run `scripts/check.ps1` before every push. The pre-push hook runs it too.
 - **Opening line for the new chat:** `Continue from the ROADMAP handoff.`
@@ -70,7 +70,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 
 **Steps:**
 1. Radar and design. Done (D-47).
-2. Docs step: write this plan and D-47 (2a, done), then compress DECISIONS (2b), ARCHITECTURE (2c), README (2d).
+2. Docs step: plan and D-47, then compression of DECISIONS, ARCHITECTURE and README. Done.
 3. `GET /api/v1/documents` (newest first, `limit` and `offset`) with tests; ARCHITECTURE and README updated in the same commit.
 4. Streamlit app in `ui/`, calling the API over HTTP, in its own uv dependency group.
 5. End-to-end check by hand, `scripts/check.ps1`, docs, ripple check, tag `phase-9`.
@@ -138,7 +138,7 @@ Completed phases are not re-described here. For what each one built, read ARCHIT
 - Models in the Airflow image: the embedding model is in the `hf-cache` volume, but the RapidOCR models (about 100 s of download) live in the container layer and are fetched again when the container is recreated. Check Docling's documented way to pre-download them first. Natural place: Phase 11.
 - Ingestion edge cases: a document that kills the worker is reset and retried at every run (no attempt counter); the reset of stuck documents assumes no manual ingestion runs at the same time.
 - Cold start: the first run of an ingestion task took about 66 s before the work started, a retry only 9 s (E-5). Disk cache on the HDD is the suspected cause, not proven. Measure again on an SSD or on AWS before tuning anything.
-- Docs over the size budget (ENGINEERING_STANDARDS section 13): README about 13.6 KB (budget 8), ARCHITECTURE about 26 KB (20), DECISIONS about 44 KB (30). Phase 9 step 2b to 2d.
+- Docs over the size budget (ENGINEERING_STANDARDS section 13), measured 2026-10-22 after the compression: README 12084 bytes (budget about 8000), ARCHITECTURE 24571 (20000), DECISIONS 34906 (30000). Box-drawing characters count 3 bytes each, so the real text is shorter. Next: move the Airflow runbook from README to `airflow/README.md` (Phase 9 step 3); compress D-43 to D-46 and E-1 to E-3 at the end of Phase 9.
 - Model loading lock (two simultaneous first requests may both load the model; harmless for one developer).
 - Map `ValueError` from services to an HTTP error for callers that skip the schemas.
 - Check accent display in PowerShell 5.1.
@@ -155,6 +155,6 @@ If a later phase blocks understanding of an earlier one, go back. A phase is don
 
 ## What must not happen
 
-No AWS before the local system works. No Kubernetes, microservices, Kafka, agents, fine-tuning or separate vector database without a measured requirement. No hybrid retrieval without evaluation evidence. No elaborate frontend. No technology added for CV keywords.
+No AWS before the local system works. No Kubernetes, microservices, Kafka, agents, fine-tuning or separate vector database without a measured requirement. No hybrid retrieval without evidence. No elaborate frontend. No technology added for CV keywords.
 
 > Build the core AI system first. Make it reliable. Evaluate it. Then productionize and deploy it.
