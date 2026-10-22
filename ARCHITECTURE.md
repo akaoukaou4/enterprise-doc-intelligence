@@ -299,7 +299,7 @@ The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` =
 - PyTorch is the CPU-only build from an explicit `pytorch-cpu` uv index in `pyproject.toml`.
 - Docker Desktop runs on WSL 2 with a memory limit of 8 GB (`.wslconfig`). One ingestion peaks at about 5.2 GB (E-5): close heavy applications while it runs.
 - Quality gates: `scripts/check.ps1` (Ruff, pytest), pre-commit (including a secret scanner), a pre-push hook, GitHub Actions CI on every push.
-- Airflow is started and stopped on its own from `airflow/` (README). The DAG is created paused and must be unpaused once; pause it when you stop working.
+- Airflow is started and stopped on its own from `airflow/` (`airflow/README.md`). The DAG is created paused and must be unpaused once; pause it when you stop working.
 
 **Tests** (D-26, D-37)
 - Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The status runner is tested with a fake ingestor; the DAG helpers are loaded by file path, since CI has no Airflow.

@@ -77,57 +77,7 @@ uv run python -m scripts.smoke_gemini
 
 ### Airflow (automatic ingestion)
 
-Airflow has its own Docker Compose in `airflow/`; the root `docker compose up -d` does not start it. Start the root stack first: Airflow reads PostgreSQL and MinIO on your computer.
-
-**First time only:** create `airflow\.env` (git-ignored, never commit it):
-
-| Key | Value |
-|---|---|
-| `AIRFLOW_UID` | `50000` |
-| `FERNET_KEY` | a new random key (command below) |
-| `DATABASE_URL` | the root `.env` value, with `host.docker.internal` instead of `localhost` or `127.0.0.1` |
-| `MINIO_ENDPOINT` | `http://host.docker.internal:9000` |
-| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET` | the same as the root `.env` |
-| `HF_TOKEN` | your Hugging Face token |
-
-Do not copy `GEMINI_API_KEY`: ingestion never calls Gemini. A Fernet key is 32 random bytes in URL-safe base64; this prints one:
-
-```powershell
-$b = New-Object byte[] 32; (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($b); [Convert]::ToBase64String($b).Replace('+','-').Replace('/','_')
-```
-
-Build and initialize (a few GB and several minutes the first time):
-
-```powershell
-cd airflow
-docker compose build
-docker compose up airflow-init
-docker compose up -d
-```
-
-The UI is at http://localhost:8080 (login `airflow` / `airflow`, local use only). The DAG `ingest_documents` starts paused. Unpause it once, then check it has no import errors (the second command must print "No data found"):
-
-```powershell
-docker compose exec airflow-scheduler airflow dags unpause ingest_documents
-```
-
-```powershell
-docker compose exec airflow-scheduler airflow dags list-import-errors
-```
-
-**When you stop working**, pause the DAG (it polls every minute), then stop the stack:
-
-```powershell
-docker compose exec airflow-scheduler airflow dags pause ingest_documents
-```
-
-```powershell
-docker compose down
-```
-
-Never run `docker compose down -v` unless you mean it: it deletes the `hf-cache` volume (a download of about 12 minutes) and the Airflow history.
-
-**Timing.** The first ingestion in a new container downloads the models (17.5 minutes measured). After that a short PDF takes about 4 minutes from upload to `processed`, one at a time. A change in `pyproject.toml` or `uv.lock` needs `docker compose build`; a change in `app/` or `scripts/` does not (they are mounted).
+Ingestion starts by itself through Apache Airflow, which has its own Docker Compose in `airflow/`. Setup, start, stop and troubleshooting: [airflow/README.md](airflow/README.md). Start the root stack first (`docker compose up -d`): Airflow reads PostgreSQL and MinIO on your computer.
 
 ## Usage
 
