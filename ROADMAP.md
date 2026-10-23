@@ -119,7 +119,7 @@ Plan, exit conditions and exchange limit are written at the start of the phase (
 - Ingestion edge cases: a document that kills the worker is reset and retried at every run (no attempt counter); the reset of stuck documents assumes no manual ingestion runs at the same time.
 - Cold start: the first run of an ingestion task took about 66 s before the work started, a retry only 9 s (E-5). Disk cache on the HDD is the suspected cause, not proven. Measure again on an SSD or on AWS before tuning anything.
 - Docs over the size budget (ENGINEERING_STANDARDS section 13): at the last measure (2026-10-22, before the Phase 9 end pass) README 12084 bytes, ARCHITECTURE 24571, DECISIONS 34906. Re-measure at the start of Phase 10. Compress D-43 to D-46 and E-1 to E-3 once Phases 11 and 12 have settled them (their revisit points).
-- Model loading lock (two simultaneous first requests may both load the model; harmless for one developer).
+- Docs to update at the end of Phase 10, after D-49 (they still describe lazy loading): ARCHITECTURE sections 8 and 13 (model loads in the background at start when `PRELOAD_EMBEDDING_MODEL=true`, lock and `/health/model`, measured 26.3 s on 2026-10-23, new row in the API table, new setting in section 11); README (setting, `/health/model`, remove "the first question is slow"); handoff line "Last verified" (test count).
 - Map `ValueError` from services to an HTTP error for callers that skip the schemas.
 - Check accent display in PowerShell 5.1.
 - A red error appeared once on the first UI question after a restart; it was not reproduced and its text was not captured (D-48). If it comes back, copy the exact text.
