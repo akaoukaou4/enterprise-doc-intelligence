@@ -87,6 +87,31 @@ def documents_section(client: ApiClient) -> None:
     panel()
 
 
+MODEL_POLL_READY = "30s"  # slow check once ready: it notices an API restart
+MODEL_MESSAGES = {
+    "ready": "Model: ready.",
+    "loading": "Model: loading. Questions wait until it is ready (up to a minute)...",
+    "idle": "Model: not loaded yet. The first question will load it (up to a minute).",
+    "unknown": "Model: status unknown. Is the API running?",
+}
+
+
+def model_status_section(client: ApiClient) -> None:
+    ready = st.session_state.get("model_ready", False)
+    run_every = MODEL_POLL_READY if ready else POLL_INTERVAL
+
+    @st.fragment(run_every=run_every)
+    def status_line() -> None:
+        status = client.model_status()
+        st.caption(MODEL_MESSAGES.get(status, MODEL_MESSAGES["unknown"]))
+        now_ready = status == "ready"
+        if st.session_state.get("model_ready", False) != now_ready:
+            st.session_state["model_ready"] = now_ready
+            st.rerun()  # full rerun, so run_every is decided again
+
+    status_line()
+
+
 def render_answer(result: dict) -> None:
     if not result["found"]:
         st.warning(result["answer"] or NOT_FOUND_TEXT)
@@ -141,6 +166,7 @@ def ask_section(client: ApiClient) -> None:
 st.set_page_config(page_title="Document assistant", layout="wide")
 st.title("Document assistant")
 _client = get_client()
+model_status_section(_client)
 upload_section(_client)
 documents_section(_client)
 ask_section(_client)

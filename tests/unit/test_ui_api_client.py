@@ -116,3 +116,16 @@ def test_base_url_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) ->
     module.ApiClient(session=session).list_documents()
 
     assert session.calls[0][1] == "http://env.test/api/v1/documents"
+
+
+def test_model_status_reads_the_status_even_on_503() -> None:
+    session = FakeSession(FakeResponse(503, {"status": "loading"}))
+
+    assert _client(session).model_status() == "loading"
+    assert session.calls[0][1] == "http://api.test/health/model"
+
+
+def test_model_status_is_unknown_when_the_api_is_unreachable() -> None:
+    session = FakeSession(error=requests.ConnectionError())
+
+    assert _client(session).model_status() == "unknown"

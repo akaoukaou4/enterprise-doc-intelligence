@@ -1,13 +1,14 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response, status
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.deps import DbSession
+from app.api.deps import DbSession, EmbeddingServiceDep
 from app.core.config import get_settings
 from app.core.errors import ExternalServiceError
 from app.schemas.health import DbHealthResponse, HealthResponse
+from app.schemas.model_health import ModelHealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -33,3 +34,16 @@ def health_db(db: DbSession) -> DbHealthResponse:
         logger.warning("Database health check failed: %s", exc)
         raise ExternalServiceError("Database is not reachable") from exc
     return DbHealthResponse(status="ok", database="ok")
+
+
+@router.get(
+    "/health/model",
+    response_model=ModelHealthResponse,
+    responses={503: {"model": ModelHealthResponse}},
+)
+def health_model(embeddings: EmbeddingServiceDep, response: Response) -> ModelHealthResponse:
+    """Readiness check: is the embedding model loaded? It never starts a load."""
+    state = embeddings.state
+    if state != "ready":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return ModelHealthResponse(status=state)

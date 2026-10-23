@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # or a new migration (the service checks this when the model loads).
     embedding_model_id: str = "google/embeddinggemma-300m"
 
+    # Load the embedding model in the background when the API starts. reads
+    # PRELOAD_EMBEDDING_MODEL. Off by default: tests and CI must never need the
+    # gated model. Switch it on in your local .env (D-49).
+    preload_embedding_model: bool = False
+
     # Gemini API (answer generation). reads GEMINI_API_KEY and GEMINI_MODEL.
     # The key is optional so the app, tests and CI start without it. It is a
     # SecretStr, so printing or logging the settings never shows the value;

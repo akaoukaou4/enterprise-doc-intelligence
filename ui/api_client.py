@@ -15,6 +15,7 @@ UPLOAD_TIMEOUT = 60
 # The first question after a server start loads the embedding model (about 22 s)
 # and then waits for Gemini (30 s timeout on the server).
 ASK_TIMEOUT = 90
+HEALTH_TIMEOUT = 5
 
 
 class ApiError(Exception):
@@ -60,3 +61,13 @@ class ApiClient:
         if top_k is not None:
             body["top_k"] = top_k
         return self._request("POST", "/ask", ASK_TIMEOUT, json=body)
+
+    def model_status(self) -> str:
+        """The embedding model state: ready, loading or idle. unknown if the API is unreachable."""
+        try:
+            response = self._http.request(
+                "GET", f"{self._base}/health/model", timeout=HEALTH_TIMEOUT
+            )
+            return str(response.json()["status"])
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            return "unknown"

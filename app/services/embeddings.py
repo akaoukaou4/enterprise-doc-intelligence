@@ -11,6 +11,8 @@ cosine similarity is a plain dot product.
 """
 
 import logging
+import threading
+import time
 from typing import Any
 
 from app.core.config import Settings
@@ -32,13 +34,29 @@ def build_document_text(chunk: Chunk) -> str:
 
 
 class EmbeddingService:
-    """Turns chunks and questions into vectors. Loads the model on first use."""
+    """Turns chunks and questions into vectors. Loads the model once, on demand."""
 
     def __init__(self, settings: Settings, model: Any | None = None) -> None:
         self._settings = settings
-        # Tests pass a fake model; in the app it is loaded lazily.
+        # Tests pass a fake model; in the app it is loaded on first use or by
+        # the background preload at startup (D-49).
         self._model = model
         self._checked = False
+        self._loading = False
+        # One load at a time: a preload and an early question must never load
+        # the model twice (that would double its memory).
+        self._lock = threading.Lock()
+
+    @property
+    def state(self) -> str:
+        """Return ready, loading or idle (not loaded yet). Never starts a load."""
+        if self._checked:
+            return "ready"
+        return "loading" if self._loading else "idle"
+
+    def load(self) -> None:
+        """Load the model now. Safe to call from several threads at once."""
+        self._get_model()
 
     def embed_documents(self, chunks: list[Chunk]) -> list[list[float]]:
         """One vector per chunk, in the same order."""
@@ -54,6 +72,19 @@ class EmbeddingService:
         return vector.tolist()
 
     def _get_model(self) -> Any:
+        if self._checked:
+            return self._model
+        with self._lock:
+            # Another thread may have finished the load while this one waited.
+            if not self._checked:
+                self._loading = True
+                try:
+                    self._load_and_check()
+                finally:
+                    self._loading = False
+        return self._model
+
+    def _load_and_check(self) -> None:
         if self._model is None:
             # Imported here because importing sentence_transformers loads torch,
             # which takes seconds. Importing this module stays fast this way.
@@ -61,16 +92,16 @@ class EmbeddingService:
 
             model_id = self._settings.embedding_model_id
             logger.info("Loading embedding model %s", model_id)
+            started = time.perf_counter()
             self._model = SentenceTransformer(model_id, device="cpu")
+            logger.info("Embedding model loaded in %.1f s", time.perf_counter() - started)
 
-        if not self._checked:
-            dimension = self._model.get_embedding_dimension()
-            if dimension != EMBEDDING_DIMENSIONS:
-                raise RuntimeError(
-                    f"Embedding model {self._settings.embedding_model_id} produces "
-                    f"{dimension}-dimensional vectors, but the database column is "
-                    f"vector({EMBEDDING_DIMENSIONS}). Use a {EMBEDDING_DIMENSIONS}-"
-                    "dimensional model or add a migration."
-                )
-            self._checked = True
-        return self._model
+        dimension = self._model.get_embedding_dimension()
+        if dimension != EMBEDDING_DIMENSIONS:
+            raise RuntimeError(
+                f"Embedding model {self._settings.embedding_model_id} produces "
+                f"{dimension}-dimensional vectors, but the database column is "
+                f"vector({EMBEDDING_DIMENSIONS}). Use a {EMBEDDING_DIMENSIONS}-"
+                "dimensional model or add a migration."
+            )
+        self._checked = True
