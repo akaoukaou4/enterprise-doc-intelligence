@@ -26,6 +26,13 @@ class NotFoundError(AppError):
     code = "not_found"
 
 
+class ConflictError(AppError):
+    """The request clashes with the current state (e.g. delete while processing)."""
+
+    status_code = 409
+    code = "conflict"
+
+
 class ValidationFailedError(AppError):
     status_code = 422
     code = "validation_failed"

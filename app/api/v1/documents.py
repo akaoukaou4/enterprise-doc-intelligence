@@ -39,3 +39,8 @@ def list_documents(
 def get_document(document_id: uuid.UUID, service: DocumentServiceDep) -> DocumentResponse:
     document = service.get(document_id)
     return DocumentResponse.model_validate(document)
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(document_id: uuid.UUID, service: DocumentServiceDep) -> None:
+    service.delete(document_id)

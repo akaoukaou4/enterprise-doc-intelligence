@@ -130,6 +130,12 @@
 **Limits.** A question asked in the first seconds still waits for the load and can pass 90 s on a cold disk; the status line says so. A failed preload shows `idle` and is in the server log; the next question retries. `--reload` reloads the model on every save: turn the setting off while editing API code.
 **Revisit.** Phase 11: use `/health/model` as the container health check.
 
+### D-50 · Delete a document: row first, then file; refused while processing · Accepted (2026-10-24) · Revisit at Phase 12
+**Decision.** `DELETE /api/v1/documents/{id}` returns 204. `DocumentService.delete` locks the row (`SELECT ... FOR UPDATE`), refuses with 409 when `status` is `processing`, deletes the row (chunks cascade, D-16), commits, then deletes the file in storage. An unknown id returns 404. If the storage delete fails, the error is logged and the call still succeeds: an orphan file is harmless, a row pointing to a missing file is not. A file already missing counts as success.
+**Why.** A worker that claimed the document would fail on a missing row. The row lock and `SKIP LOCKED` in the claim (D-45) mean the document is either already `processing` (409) or cannot be claimed while the delete runs. Two manual SQL cleanups (Phases 8 and 9) show the need; the e2e script (Phase 10) needs it to leave no residue.
+**Rejected.** File first, then row (a failure leaves a row with no file). Deleting while `processing` (race with the worker). Soft delete (no requirement).
+**Limits.** No authentication (Phase 12 decides before any exposure). A crash between the two steps leaves an orphan file, the same limit as D-19. **Revisit** at Phase 12 (authentication).
+
 ---
 
 ## Evidence

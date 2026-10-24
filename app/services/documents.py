@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.errors import NotFoundError, ValidationFailedError
+from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from app.db.models import Document
 from app.services.storage import StorageService
 
@@ -66,6 +66,27 @@ class DocumentService:
         if document is None:
             raise NotFoundError(f"Document not found: {document_id}")
         return document
+
+    def delete(self, document_id: uuid.UUID) -> None:
+        """Delete the row (chunks cascade), then the file (D-50)."""
+        # Lock the row so a worker cannot claim it while we decide.
+        document = self._db.get(Document, document_id, with_for_update=True)
+        if document is None:
+            raise NotFoundError(f"Document not found: {document_id}")
+        if document.status == "processing":
+            self._db.rollback()  # release the lock
+            raise ConflictError("The document is being processed. Try again when it is done.")
+
+        storage_key = document.storage_key
+        try:
+            self._db.delete(document)
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+        # Row first. A leftover file is harmless; a row without a file is not.
+        self._remove_orphan(storage_key)
 
     def list_documents(
         self, limit: int = DEFAULT_LIST_LIMIT, offset: int = 0
