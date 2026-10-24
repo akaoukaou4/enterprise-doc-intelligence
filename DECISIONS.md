@@ -118,8 +118,8 @@
 **Why.** (1) One place to test, to change the URL and to keep errors short. (2) No useless requests when nothing is happening. (3) A disabled button waited for the text box to lose focus, so the user had to click elsewhere before Ask worked. (4) The Airflow image installs with `--no-dev --frozen`: on 2026-10-23, `uv export --frozen --no-dev --no-hashes` listed no `streamlit`. (6) The screens are a thin layer, and the client holds the logic worth testing.
 **Rejected.** Testing the screens with Streamlit's own app-testing tool now (cost for a thin layer; Phase 10 candidate). Preloading the embedding model at API start (that is the D-21 decision, Phase 11; moved forward to D-49).
 **Evidence (2026-10-22 and 23).** Exit conditions by hand, all five passed: a table of 14 `processed` documents; an answer with its sources; a "not found" box for an out-of-scope question; a short message with the API stopped; a new PDF went `uploaded`, `processing`, `processed` without a page reload. First question after an API start: embedding model load from 00:25:35 to 00:26:09 (34 s), Gemini 1.6 s, answer at 00:26:13 (about 38 s in total). A red error shown by the UI on the very first attempt was not reproduced and its text was not captured (the same symptom appeared again on 2026-10-23, see D-49). `scripts/check.ps1`: 235 passed.
-**Limits.** The file picker shows Streamlit's default 200 MB limit; the API refuses over 20 MB with a clear message. A personal file was uploaded during the manual check, reached `processed` and was removed by hand (one `DELETE` naming its id, then the file in MinIO); there is no delete endpoint. No question was asked while it was `processed`, so nothing reached Gemini.
-**Revisit.** Phase 10: the picker limit and tests of the screens. Phase 11: the UI container. The model preload moved to D-49.
+**Limits.** The file picker showed Streamlit's default 200 MB limit (fixed in Phase 10, D-52); the API refuses over 20 MB with a clear message. A personal file was uploaded during the manual check, reached `processed` and was removed by hand (one `DELETE` naming its id, then the file in MinIO); there was no delete endpoint then (D-50). No question was asked while it was `processed`, so nothing reached Gemini.
+**Revisit.** Phase 10: the picker limit (done, D-52) and tests of the screens (still open). Phase 11: the UI container. The model preload moved to D-49.
 
 ### D-49 · Embedding model preloaded in the background, with a readiness endpoint · Accepted (2026-10-23)
 **Partly supersedes D-21** (lazy loading) and the model-preload revisit of D-48.
@@ -135,6 +135,21 @@
 **Why.** A worker that claimed the document would fail on a missing row. The row lock and `SKIP LOCKED` in the claim (D-45) mean the document is either already `processing` (409) or cannot be claimed while the delete runs. Two manual SQL cleanups (Phases 8 and 9) show the need; the e2e script (Phase 10) needs it to leave no residue.
 **Rejected.** File first, then row (a failure leaves a row with no file). Deleting while `processing` (race with the worker). Soft delete (no requirement).
 **Limits.** No authentication (Phase 12 decides before any exposure). A crash between the two steps leaves an orphan file, the same limit as D-19. **Revisit** at Phase 12 (authentication).
+**Evidence (2026-10-24).** 13 unit tests, 3 integration tests (row, chunk and file gone; 404; 409 keeps everything); the real API returned 404 for an unknown id and 204 for a real `failed` document, and the document count went from 15 back to 14.
+
+### D-51 · One end-to-end check over HTTP: `scripts/e2e_check.py` · Accepted (2026-10-24) · Revisit at Phase 12
+**Decision.** A script that talks to the API over HTTP only (`API_URL`). It waits for `/health/model`, uploads a copy of the smallest fictional corpus PDF under a unique name, polls until `processed`, checks that `/search` returns the new file, asks one answerable question (q51) and one unanswerable (q17) through `/ask`, deletes the document in a `finally` block and checks that it is gone and the count is back. One PASS or FAIL line per check, exit code 0 or 1.
+**Why.** The unit tests use fakes and the evaluation calls services directly, so nothing proved the whole running system (API, Airflow, MinIO, PostgreSQL, Gemini) together. Over HTTP the same script checks the local stack, the container stack (Phase 11) and AWS (Phase 12). q51 comes from the smallest file, so the wait is shortest. q17 is a clean refusal; the near-misses are for the evaluation, not for a smoke check that must not flake.
+**Rejected.** A pytest test (needs Airflow, a Gemini key and 5 minutes; automated tests never call Gemini, I12). Calling services directly (cannot run against a remote system). A mock Gemini (would not prove the real call).
+**Evidence (2026-10-24).** All 11 checks passed; upload to `processed` took 316 s; 14 documents before and after. The chunk count (302) was checked by hand afterwards.
+**Limits.** Needs Airflow running with the DAG unpaused. It counts documents, not chunks (the cascade is covered by the integration test). A `409` on cleanup leaves the document and prints its id. It uses 2 of the 500 daily free Gemini requests.
+
+### D-52 · The file picker limit is 20 MB, set in `.streamlit/config.toml` · Accepted (2026-10-24)
+**Decision.** `[server] maxUploadSize = 20` in `.streamlit/config.toml` at the project root (Streamlit's own option, default 200; official docs checked 2026-10-24). The value repeats `MAX_UPLOAD_MB` of the API on purpose.
+**Why.** Without it a 200 MB file is uploaded before the API refuses it. The UI imports nothing from `app/` (I15), so it cannot read the API's setting. Streamlit reads the file at start from the folder it is launched in, so it must be started from the project root.
+**Rejected.** Reading the limit from the API at runtime (a new endpoint and a call for one number). Leaving the default (the API already refuses, but only after the upload).
+**Evidence (2026-10-24).** The picker shows "Limit 20MB per file"; a 22,020,096-byte file was rejected with "File must be 20.0MB or smaller" before any request.
+**Limits.** Two places must change together. **Revisit** in Phase 11 (the UI container must carry the file).
 
 ---
 

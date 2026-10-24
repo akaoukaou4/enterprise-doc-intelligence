@@ -3,7 +3,7 @@
 **Question this file answers:** how does the system work **today**?
 **Not here:** the plan (ROADMAP), the reasons behind choices (DECISIONS), how to run it (README), scope (PROJECT).
 
-Written in the present tense. If something is not built yet, it is listed once in section 14 and nowhere else. Status as of the end of Phase 9 plus the D-49 fix (2026-10-24). Compressed 2026-10-22; the long version is in Git at the tag `architecture-before-compress`.
+Written in the present tense. If something is not built yet, it is listed once in section 14 and nowhere else. Status as of the end of Phase 10 (2026-10-24). Compressed 2026-10-22; the long version is in Git at the tag `architecture-before-compress`.
 
 ---
 
@@ -43,18 +43,18 @@ These **invariants** hold in every change. A change that breaks one needs a new 
                               │  HTTP only (I15)
                               ▼
                           FastAPI
-        POST /documents   GET /documents   POST /search   POST /ask   GET /health...
-              │               │               │             │
-              ▼               ▼               ▼             ▼
-       DocumentService (upload, list)   RetrievalService  RagService
-              │                               │             │  ├─ rag_prompt (numbered sources)
-              │                               │             │  └─ LlmService ──► Gemini API
-              │                               ▼             │
-              │                         EmbeddingService ◄──┘   (EmbeddingGemma, CPU, in process)
-              │                               │
-              ▼                               ▼
-         StorageService                PostgreSQL + pgvector
-         boto3 → MinIO                 documents (with status), document_chunks
+   POST/GET/DELETE /documents   POST /search   POST /ask   GET /health...
+              │                      │             │
+              ▼                      ▼             ▼
+       DocumentService         RetrievalService  RagService
+       (upload, list,                │             │  ├─ rag_prompt (numbered sources)
+        get, delete)                 │             │  └─ LlmService ──► Gemini API
+              │                      ▼             │
+              │                EmbeddingService ◄──┘   (EmbeddingGemma, CPU, in process)
+              │                      │
+              ▼                      ▼
+         StorageService        PostgreSQL + pgvector
+         boto3 → MinIO         documents (with status), document_chunks
          (S3 on AWS)
 
    Ingestion, automatic (Airflow, own compose in airflow/):
@@ -67,6 +67,9 @@ These **invariants** hold in every change. A change that breaks one needs a new 
 
    Evaluation (run by hand):
    scripts/evaluate.py ─► RetrievalService (+ RagService in full mode) ─► data/eval/runs/*.json
+
+   End-to-end check (run by hand, HTTP only, any environment):
+   scripts/e2e_check.py ─► the API at API_URL (upload, wait, search, ask, refuse, delete)
 ```
 
 At API start, with `PRELOAD_EMBEDDING_MODEL=true`, a background thread loads the embedding model while the API already answers requests (D-49, section 8).
@@ -90,9 +93,10 @@ app/
 ├── pipeline/            models.py (Chunk), extract.py, chunk.py, clean.py, process.py
 └── schemas/             health, model_health, errors, info, documents, search, ask
 ui/                      app.py (the Streamlit page), api_client.py (the HTTP client of the API)
+.streamlit/              config.toml (the file picker limit, 20 MB)
 airflow/                 docker-compose.yaml, Dockerfile, README.md, dags/ (ingest_documents.py, ingest_helpers.py); .env, logs/, config/, plugins/ are git-ignored
 migrations/              Alembic (env.py reads the URL from Settings); versions/ excluded from Ruff
-scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, ingest_folder, claim_documents, smoke_gemini, evaluate, check.ps1
+scripts/                 storage_roundtrip, explore_docling, run_pipeline, ingest_document, ingest_folder, claim_documents, smoke_gemini, evaluate, e2e_check, check.ps1
 tests/unit/              fakes; run everywhere including CI
 tests/integration/       real PostgreSQL and MinIO; skip themselves when unavailable
 data/corpus/             the fictional test corpus (14 policy PDFs, committed; origin in SOURCES.md, D-40)
@@ -100,7 +104,7 @@ data/eval/               questions.json (the evaluation set), results/ (kept run
 docs/                    provider_limits.md (free-tier limits of the LLM, with the date they were checked)
 ```
 
-Scripts that import `app` run as modules from the project root: `uv run python -m scripts.run_pipeline`. Test file names must be unique across `tests/` (no `__init__.py`).
+Scripts that import `app` run as modules from the project root: `uv run python -m scripts.run_pipeline`. `scripts/e2e_check.py` imports nothing from `app` and needs only `requests`. Test file names must be unique across `tests/` (no `__init__.py`).
 
 ---
 
@@ -117,14 +121,15 @@ Routes parse HTTP, call a service and format the response (I2). Business endpoin
 | `POST /api/v1/documents` | upload a PDF: store the file, insert the row (status `uploaded`), return metadata (201) |
 | `GET /api/v1/documents` | one page of documents, newest first: `{items, total, limit, offset}` |
 | `GET /api/v1/documents/{id}` | metadata of one document, including its current `status` |
+| `DELETE /api/v1/documents/{id}` | delete the row (chunks cascade) and the stored file. 204; 404 for an unknown id; 409 while `processing` (D-50) |
 | `POST /api/v1/search` | the most similar chunks for a question (inspection endpoint) |
 | `POST /api/v1/ask` | grounded answer with citations |
 
-The list takes `limit` (1 to 100, default 20) and `offset` (0 or more); outside the range it returns `422`. Order is `created_at` descending, then `id`, so pages never overlap (D-47). There is no delete endpoint. The upload does not call Airflow and does not wait for ingestion: the document stays `uploaded` until the DAG claims it, within about a minute. If Airflow is not running, documents wait.
+The list takes `limit` (1 to 100, default 20) and `offset` (0 or more); outside the range it returns `422`. Order is `created_at` descending, then `id`, so pages never overlap (D-47). The upload does not call Airflow and does not wait for ingestion: the document stays `uploaded` until the DAG claims it, within about a minute. If Airflow is not running, documents wait. There is no authentication: upload and delete are open to anyone who can reach the API (decision in Phase 12).
 
 **Dependencies.** `app/api/deps.py` builds services per request, except the `EmbeddingService`, one shared instance (I5, `lru_cache`). The startup preload in `app/main.py` uses this same instance.
 
-**Errors.** One shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError`, `ValidationFailedError`, `ExternalServiceError`); registered handlers convert them. FastAPI's own errors use the same shape. Unexpected exceptions return a generic message and are logged in full.
+**Errors.** One shape: `{"error": {"code": "...", "message": "..."}}`. Services raise `AppError` subclasses (`NotFoundError` 404, `ConflictError` 409, `ValidationFailedError` 422, `ExternalServiceError` 502); registered handlers convert them. FastAPI's own errors use the same shape. Unexpected exceptions return a generic message and are logged in full.
 
 **Search, ask and the health routes** are plain `def`, so FastAPI runs blocking work in a thread pool (D-21). Request: `{question, top_k}`; the question is stripped, 1 to 1000 characters; `top_k` is 1 to 20 (default 8, D-42). Invalid input returns `422`. The schemas import the limits from the retrieval service (D-25).
 
@@ -203,7 +208,22 @@ SearchRequest (validated) ─► RetrievalService.search(question, top_k)
 
 `RetrievedChunk` is a frozen dataclass: `document_id, filename, page_numbers, heading, text, similarity` (D-24). It carries everything a citation needs, and callers never see ORM rows or raw vectors. Ties are broken by `document_id` and `chunk_index`, so the order is stable. Dense search always returns the nearest chunks, even when the documents cannot answer; every similarity is returned.
 
-### 6.4 Ask
+### 6.4 Delete
+
+```text
+DELETE /api/v1/documents/{id}
+  route: DocumentService.delete
+    SELECT the row FOR UPDATE            (a worker cannot claim it meanwhile)
+      unknown id         ─► 404, nothing touched
+      status processing  ─► roll back (release the lock), 409, nothing touched
+    delete the row ─► commit            (chunks go with it: ON DELETE CASCADE; on failure: roll back, keep the file)
+    StorageService.delete the file      (best effort: a failure is logged, the call still succeeds)
+  response: 204, no body
+```
+
+The row goes first because an orphan file is harmless, while a row that points to a missing file is not (D-50). A crash between the two steps can leave an orphan file, the same limit as the upload (D-19). A document in `failed`, `uploaded` or `processed` can be deleted; a `failed` document is the normal case, since it is never retried by itself.
+
+### 6.5 Ask
 
 ```text
 POST /api/v1/ask {question, top_k}
@@ -220,7 +240,7 @@ POST /api/v1/ask {question, top_k}
   log line: chunk count, similarities, found, cited and dropped source numbers   (numbers only, I9)
 ```
 
-Search and ask read every chunk of every document, whatever its status. A document that is not yet `processed` has no chunks (or, while re-ingested, its old ones), so it does not appear in answers until it is done. A question asked while the embedding model is still loading waits for the load; it does not start a second one (section 8).
+Search and ask read every chunk of every document, whatever its status. A document that is not yet `processed` has no chunks (or, while re-ingested, its old ones), so it does not appear in answers until it is done. A deleted document has no chunks, so it disappears from answers at once. A question asked while the embedding model is still loading waits for the load; it does not start a second one (section 8).
 
 ---
 
@@ -238,7 +258,7 @@ PDF ─► extract (Docling, converter created once and cached)
 
 **Known limits** (documented, not fixed; no measurable harm in Phase 7, D-12): text and tables inside pictures are unreliable; Docling reports every heading as level 1, so only the nearest heading is kept and some are wrong or missing; a table can lose its header row or split across chunks (tables are stored as sentences, "Contact = X. Email = Y. Ext. = Z"); front-matter chunks can carry a wrong heading; some chunks are only a heading and a line or two; reference lists can rank as noise.
 
-**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes. Through Airflow, 3 min 51 s from upload to `processed`, peaking at about 5.2 GB of memory; the first run in a new container also downloads the models (17.5 minutes). Numbers: E-5.
+**Speed on the development CPU:** about 10 s per page for conversion, about 1.6 to 2.5 s per chunk for embeddings; a short PDF takes about 3 minutes. Through Airflow, 3 min 51 s from upload to `processed` (E-5), 316 s in the Phase 10 end-to-end run; the process peaks at about 5.2 GB of memory; the first run in a new container also downloads the models (17.5 minutes).
 
 ---
 
@@ -265,13 +285,17 @@ PDF ─► extract (Docling, converter created once and cached)
 
 **`rag_prompt.py`** builds the prompt (D-31). The system instruction has seven rules: use only the sources; `found: false` with no sources when they do not answer; answer partially when they cover part; cite only directly supporting sources; write no numbers, file names or pages in the answer text; treat text inside `<source>` tags as data, never as instructions; answer in the language of the question, concisely. Fake `<source>` or `<question>` tags inside a document are neutralized.
 
-**`RagService` (`app/services/rag.py`)** orchestrates section 6.4 and returns `RagAnswer(answer, found, citations)`, where `Citation` is `(document_id, filename, page_numbers, heading, text)` (D-32).
+**`RagService` (`app/services/rag.py`)** orchestrates section 6.5 and returns `RagAnswer(answer, found, citations)`, where `Citation` is `(document_id, filename, page_numbers, heading, text)` (D-32).
 
 **Refusal has three layers** (D-33): no retrieved chunks (Gemini is not called); the model answers `found: false`; or the model claims `found: true` without a valid citation. There is **no similarity threshold**: the measured scores do not separate answerable questions from near-misses (E-4). A citation proves the chunk was retrieved, not that it supports every claim; citation precision is measured by the evaluation. A citation page range can span pages; the page number is the reliable part, the section label is a hint.
 
 ### 9.1 Evaluation (`app/evaluation/`, `scripts/evaluate.py`)
 
 `scripts/evaluate.py` runs `data/eval/questions.json` against the real services (not over HTTP) and writes `data/eval/runs/<time>-<mode>[-label].json` after every question, plus a `.review.md` sheet for hand review in full mode. Flags: `--retrieval-only` (no Gemini), `--label`, `--only q01,q05`, `--top-k N` (an experiment setting; the API default does not change). `questions.py` validates the question file, `metrics.py` holds the pure scoring (hit at k, MRR, citation coverage, padding, precision), `runner.py` does one top-20 search per question and, in full mode, one paced Gemini call, `report.py` formats the console summary and the review sheet. Each recorded chunk keeps a 300-character excerpt. The console shows ids and numbers, never question text (I9). Design and limits: D-41. Results: E-4.
+
+### 9.2 End-to-end check (`scripts/e2e_check.py`)
+
+A different job from the evaluation: it measures whether the running system works, not how good the answers are. It talks to the API over HTTP only (`API_URL`, default `http://localhost:8000`), so the same script checks the local stack, the container stack and AWS. It waits for `GET /health/model`, uploads a copy of a fictional corpus PDF under a unique name, polls the document until `processed`, checks that `/search` returns the new file, asks one answerable and one unanswerable question through `/ask` (2 Gemini requests, 5 s apart), then deletes the test document and checks that it is gone and the document count is back to the start. A document that cannot be deleted (`409`) is reported by id. It prints one PASS or FAIL line per check and exits 0 or 1. It needs Airflow running with the DAG unpaused, since the ingestion goes through the DAG.
 
 ---
 
@@ -298,7 +322,7 @@ The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` =
 
 **Airflow** has its own git-ignored `airflow/.env`: `AIRFLOW_UID`, `FERNET_KEY`, and the app variables ingestion needs (`DATABASE_URL` and `MINIO_ENDPOINT` pointing at the host, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `HF_TOKEN`). No `GEMINI_API_KEY`: ingestion never calls Gemini (I13). Airflow's own settings (executor, parallelism, paused DAGs) are in `airflow/docker-compose.yaml`.
 
-**UI.** The only setting is the environment variable `API_URL` (default `http://localhost:8000`), read by `ui/api_client.py`. It is not part of `Settings`, because the UI imports nothing from `app/` (I15).
+**UI.** The only application setting is the environment variable `API_URL` (default `http://localhost:8000`), read by `ui/api_client.py`. It is not part of `Settings`, because the UI imports nothing from `app/` (I15). The file picker limit is Streamlit's own `server.maxUploadSize`, set to 20 MB in `.streamlit/config.toml`; it repeats `MAX_UPLOAD_MB` on purpose, because the UI cannot read the API's settings. Streamlit reads this file at start, from the folder it is launched in (the project root).
 
 ---
 
@@ -307,15 +331,15 @@ The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` =
 - The project is on D:. The uv cache and Hugging Face cache are on D: too (`UV_CACHE_DIR`, `HF_HOME` under `D:\Backup\School\Project\_caches\`), outside the repository (D-10).
 - PyTorch is the CPU-only build from an explicit `pytorch-cpu` uv index in `pyproject.toml`.
 - Docker Desktop runs on WSL 2 with a memory limit of 8 GB (`.wslconfig`). One ingestion peaks at about 5.2 GB (E-5): close heavy applications while it runs.
-- Quality gates: `scripts/check.ps1` (Ruff, pytest), pre-commit (including a secret scanner), a pre-push hook, GitHub Actions CI on every push.
+- Quality gates: `scripts/check.ps1` (Ruff, pytest), pre-commit (including a secret scanner), a pre-push hook, GitHub Actions CI on every push. With the containers off, the integration tests skip themselves; start them first for a full run.
 - Airflow is started and stopped on its own from `airflow/` (`airflow/README.md`). The DAG is created paused and must be unpaused once; pause it when you stop working.
 - The UI starts with `uv run --group ui streamlit run ui/app.py` from the project root (README).
 - `PRELOAD_EMBEDDING_MODEL=true` is set in the real `.env`, not only in `.env.example` (section 11).
 
 **Tests** (D-26, D-37)
-- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services, the HTTP session of the UI client), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The status runner is tested with a fake ingestor; the DAG helpers and the UI client are loaded by file path (CI has no Airflow, and `ui/` is not a package). The embedding lock and states are tested with fake model classes and threads; the startup preload with a recorder, including a failing load.
-- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when those are unavailable. Each removes only what it created (the status tests run inside a rolled-back transaction). Retrieval tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0). The list tests use documents dated 2099 with status `processed`, so they sort first and the Airflow DAG never claims them.
-- Real Docling conversion, the real embedding model, real Gemini, the real DAG and the Streamlit screens are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py`, `scripts/evaluate.py`, `airflow dags list-import-errors` inside the container, and the UI itself. Test status: ROADMAP handoff.
+- Unit tests replace dependencies with fakes (database session, storage client, embedding model, LLM client, whole services, the HTTP session of the UI client), so they are fast, need no database, MinIO or model, and run in CI. Cleaning tests use the exact junk strings found in real PDFs. The status runner is tested with a fake ingestor; the DAG helpers and the UI client are loaded by file path (CI has no Airflow, and `ui/` is not a package). The embedding lock and states are tested with fake model classes and threads; the startup preload with a recorder, including a failing load. The delete service is tested with a fake session and storage that record the order of events (commit before file delete), the row lock, every status, and both failure paths; the delete route with a fake service for 204, 404, 409 and 422.
+- Integration tests use the real PostgreSQL and MinIO containers and skip themselves when those are unavailable. Each removes only what it created (the status tests run inside a rolled-back transaction). Retrieval tests use hand-made unit vectors with known similarity (1.0, 0.7071, 0.0). The list tests use documents dated 2099 with status `processed`, so they sort first and the Airflow DAG never claims them. The delete tests create a real row, a real chunk and a real file with status `processed` (or `processing` for the refusal case, set back to `processed` before cleanup), and check that the row, the chunk and the file are gone.
+- Real Docling conversion, the real embedding model, real Gemini, the real DAG and the Streamlit screens are checked by hand with `scripts/run_pipeline.py`, `scripts/ingest_document.py`, `scripts/smoke_gemini.py`, `scripts/evaluate.py`, `airflow dags list-import-errors` inside the container, and the UI itself. The whole running system is checked by `scripts/e2e_check.py` (section 9.2). Test status: ROADMAP handoff.
 
 ---
 
@@ -323,13 +347,13 @@ The search limits (`DEFAULT_TOP_K` = 8, `MAX_TOP_K` = 20, `MAX_QUESTION_CHARS` =
 
 A Streamlit page, a status line and three parts, built as a client of the API (I15, D-47, D-48, D-49).
 
-- **`ui/api_client.py`** is the only code that speaks HTTP. `ApiClient` has `upload_document`, `list_documents`, `ask` and `model_status`; timeouts are 15 s (list), 60 s (upload), 90 s (ask) and 5 s (model status). Every failure becomes an `ApiError` with a short message safe to show ("Cannot reach the API. Is it running?", or the message of the API's own error shape). `model_status` never raises: it returns `ready`, `loading`, `idle` or `unknown` (API unreachable). The UI never shows a stack trace.
+- **`ui/api_client.py`** is the only code that speaks HTTP. `ApiClient` has `upload_document`, `list_documents`, `ask` and `model_status`; timeouts are 15 s (list), 60 s (upload), 90 s (ask) and 5 s (model status). Every failure becomes an `ApiError` with a short message safe to show ("Cannot reach the API. Is it running?", or the message of the API's own error shape). `model_status` never raises: it returns `ready`, `loading`, `idle` or `unknown` (API unreachable). The UI never shows a stack trace. The client has no delete method: the UI offers no delete.
 - **`ui/app.py`** draws a status line and three parts. (0) Status line at the top: "Model: ready", "loading", "not loaded yet" or "status unknown". A fragment checks `/health/model` every 3 s until the model is ready, then every 30 s so an API restart is noticed. It never disables the Ask button. (1) Upload: a PDF picker and a button; a message confirms the upload. (2) Documents: a table of the newest 50 (file, status, upload time), a fragment that refreshes every 3 s only while a document is `uploaded` or `processing`; a warning appears when a document is `failed`, pointing to the administrator. (3) Ask: a form (button or Ctrl+Enter; an empty question shows a hint), an expander with `top_k` (empty means the server default), the answer, and one expander per source with file, pages, section and the chunk text. `found: false` shows a warning box and no sources. The last answer is kept in the session state.
 - **Dependencies:** the `ui` group of `pyproject.toml` (Streamlit and `requests`). It is not part of the Airflow image (`uv sync --no-dev` leaves it out; checked in D-48).
-- **Known limits:** the file picker shows Streamlit's default 200 MB limit while the API refuses over 20 MB with a clear message; a question asked while the model still loads (or with the preload setting off) waits for the load, up to about a minute on a cold disk, and the spinner says so; the screens have no automated tests, only the client has.
+- **Known limits:** a question asked while the model still loads (or with the preload setting off) waits for the load, up to about a minute on a cold disk, and the spinner says so; the screens have no automated tests, only the client has. The picker limit (20 MB) and the API limit are set in two places and must be changed together.
 
 ---
 
 ## 14. Not built yet
 
-Application container image, with an offline model and `/health/model` as its health check (Phase 11), AWS (12), Terraform (13). Plan and order: ROADMAP. Small known gaps (no delete endpoint, no failure-reason column, no attempt counter for documents that kill the worker, no automated tests of the UI screens): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (D-07, D-33, E-4).
+Application container image, with an offline model and `/health/model` as its health check (Phase 11), AWS (12), Terraform (13). Authentication (decided in Phase 12, before anything is exposed). Plan and order: ROADMAP. Small known gaps (no failure-reason column, no attempt counter for documents that kill the worker, no automated tests of the UI screens, no delete button in the UI): ROADMAP backlog. Hybrid retrieval, reranking, a vector index and a similarity threshold are absent because the Phase 7 evaluation showed no need (D-07, D-33, E-4).
