@@ -1,0 +1,4 @@
+# Upload limit of the file picker, in MB. Keep it equal to MAX_UPLOAD_MB of the API
+# (the UI imports nothing from app/, so the value is repeated here on purpose, I15).
+[server]
+maxUploadSize = 20
