@@ -35,7 +35,7 @@ Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, a free Hugg
 # 1. Install dependencies (Docling and CPU-only PyTorch: several GB)
 uv sync
 
-# 2. Create your environment file and fill in the values (including GEMINI_API_KEY)
+# 2. Create your environment file and fill in the values (GEMINI_API_KEY, and PRELOAD_EMBEDDING_MODEL=true)
 copy .env.example .env
 
 # 3. Start PostgreSQL and MinIO (also creates the "documents" bucket)
@@ -48,7 +48,15 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Interactive docs: http://127.0.0.1:8000/docs. Health: `/health` and `/health/db`. MinIO console: http://localhost:9001.
+Interactive docs: http://127.0.0.1:8000/docs. Health: `/health`, `/health/db` and `/health/model`. MinIO console: http://localhost:9001.
+
+**Model preload.** With `PRELOAD_EMBEDDING_MODEL=true` in your real `.env` (the template alone changes nothing), the API loads the embedding model in the background at start: about 26 s on the development machine, longer on a cold disk. It answers requests meanwhile. This reports the state, `503` with `loading` and then `200` with `ready`:
+
+```powershell
+curl.exe -s -w " %{http_code}" http://localhost:8000/health/model
+```
+
+With `false` (the default) the model loads on the first question instead, which then waits for the load. While editing API code with `--reload`, set it to `false`: every save reloads the model.
 
 **Hugging Face (once per machine).** Open https://huggingface.co/google/embeddinggemma-300m while logged in, accept the license, then:
 
@@ -88,7 +96,7 @@ With the API running (step 5 above), start the UI in a second terminal, from the
 uv run --group ui streamlit run ui/app.py
 ```
 
-Streamlit asks for an email address the first time: press Enter to skip. The page opens at http://localhost:8501 and has three parts: upload a PDF; the document list with its status, which refreshes by itself while a document waits or is processed; and a question box that shows the answer with its sources. If the API runs somewhere else, set the environment variable `API_URL` (default `http://localhost:8000`).
+Streamlit asks for an email address the first time: press Enter to skip. The page opens at http://localhost:8501 and has a model status line at the top and three parts: upload a PDF; the document list with its status, which refreshes by itself while a document waits or is processed; and a question box that shows the answer with its sources. If the API runs somewhere else, set the environment variable `API_URL` (default `http://localhost:8000`).
 
 ## Usage
 
@@ -151,7 +159,7 @@ In `/docs`, `POST /api/v1/ask`:
 {"question": "How many vacation days do employees get per year?", "top_k": 8}
 ```
 
-`top_k` is optional (1 to 20, default 8). The response has `answer` (in the language of the question), `found` (`false` when the documents do not answer, with no citations) and `citations` (each with `filename`, `page_numbers`, `heading`, `document_id`, `text`). From PowerShell:
+`top_k` is optional (1 to 20, default 8). It sets how many stored chunks are retrieved and sent to Gemini for this question; it does not change the chunk size, which is fixed when a document is ingested. The response has `answer` (in the language of the question), `found` (`false` when the documents do not answer, with no citations) and `citations` (each with `filename`, `page_numbers`, `heading`, `document_id`, `text`). From PowerShell:
 
 ```powershell
 function Ask($q) {
@@ -167,7 +175,7 @@ function Ask($q) {
 Ask "How many vacation days do employees get per year?"
 ```
 
-The first question after the API starts is slow, about 35 s (the embedding model loads). PowerShell 5.1 can display accents wrongly: check an accented answer in `/docs` before suspecting the code. If Gemini is unreachable, out of quota or returns something unusable, `/ask` returns `502` with the standard error shape; the reason is in the server log.
+A question asked while the model is still loading waits for it (up to about a minute on a cold disk): check `/health/model` first, or watch the status line in the UI. PowerShell 5.1 can display accents wrongly: check an accented answer in `/docs` before suspecting the code. If Gemini is unreachable, out of quota or returns something unusable, `/ask` returns `502` with the standard error shape; the reason is in the server log.
 
 ### Inspect retrieval without Gemini
 
@@ -215,7 +223,7 @@ Run before every push (the pre-push hook runs it too): Ruff, format check and al
 .\scripts\check.ps1
 ```
 
-Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers and skip themselves when unavailable. Test file names must be unique across `tests/`. CI has no Airflow: the DAG itself is checked in the container with `airflow dags list-import-errors`. The UI's API client has unit tests; the Streamlit screens are checked by hand.
+Unit tests use fakes: no Docling or embedding model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO containers and skip themselves when unavailable. Test file names must be unique across `tests/`. CI has no Airflow: the DAG itself is checked in the container with `airflow dags list-import-errors`. The UI's API client and the model loading (states, lock, startup preload) have unit tests; the Streamlit screens are checked by hand.
 
 ## Known limitations
 
@@ -224,6 +232,7 @@ Unit tests use fakes: no Docling or embedding model, no database, and they never
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (E-4).
 * No delete endpoint for documents.
 * Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
+* A question asked before the embedding model is loaded waits for the load. The UI status line and `/health/model` show the state.
 * The UI's file picker shows Streamlit's default 200 MB limit; the API refuses files over 20 MB with a clear message.
 
 Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and the backlog in [ROADMAP.md](ROADMAP.md).

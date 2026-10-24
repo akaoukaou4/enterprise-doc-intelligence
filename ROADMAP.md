@@ -7,14 +7,14 @@
 
 ## Handoff (read this first)
 
-Updated: 2026-10-23, Phase 9 done (last tag: `phase-9`). Phase 10 has not started.
+Updated: 2026-10-24, Phase 9 done (last tag: `phase-9`). The model-preload fix (D-49) was pushed after the tag and the tag was not moved. Phase 10 has not started.
 
 - **Product:** upload PDFs, ask questions, get grounded answers with document, page and section citations, or a clear "not found".
 - **Current phase:** none running. Next is Phase 10 (complete local system), starting with its radar, plan, exit conditions and exchange limit (WORKING_AGREEMENT section 5).
-- **What works today:** the Streamlit UI (`ui/`): upload a PDF, a document list with live status, and questions with answers and citations. Behind it: upload (`POST /api/v1/documents`) leads to ingestion by itself. Airflow, started from `airflow/`, checks every minute for `uploaded` documents, ingests them one at a time and sets `documents.status` (`uploaded`, `processing`, `processed`, `failed`). Also: list of documents (`GET /api/v1/documents`, newest first, `limit` and `offset`), ingestion by hand (`scripts/ingest_document.py`, `scripts/ingest_folder.py`), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), the evaluation runner (`scripts/evaluate.py`). Last verified: 235 tests pass, Ruff clean (`scripts/check.ps1`).
+- **What works today:** the Streamlit UI (`ui/`): upload a PDF, a document list with live status, a model status line, and questions with answers and citations. Behind it: upload (`POST /api/v1/documents`) leads to ingestion by itself. Airflow, started from `airflow/`, checks every minute for `uploaded` documents, ingests them one at a time and sets `documents.status` (`uploaded`, `processing`, `processed`, `failed`). Also: list of documents (`GET /api/v1/documents`, newest first, `limit` and `offset`), the embedding model preloaded in the background at API start with `GET /health/model` for its state (D-49), ingestion by hand (`scripts/ingest_document.py`, `scripts/ingest_folder.py`), retrieval (`POST /api/v1/search`), RAG answers (`POST /api/v1/ask`, default `top_k` 8), the evaluation runner (`scripts/evaluate.py`). Last verified: 2026-10-23, `scripts/check.ps1` green (Ruff clean, all tests pass, none skipped with the containers running).
 - **What does not exist yet:** delete endpoint for documents, automated tests of the Streamlit screens, Docker image for the app, AWS, Terraform. No column for the failure reason (it is only in the Airflow task log).
-- **Run it locally:** `docker compose up -d` (PostgreSQL, MinIO), then `uv run uvicorn app.main:app --reload`, then `uv run --group ui streamlit run ui/app.py` (http://localhost:8501; the first start asks for an email: press Enter). Airflow has its own compose, see `airflow/README.md`: unpause the DAG once, pause it when you stop working. Set `PRELOAD_EMBEDDING_MODEL=true` in your local `.env` so the model loads at API start; the UI shows its status (D-49).
-- **Data state:** the 14 corpus PDFs in `data/corpus/` are all `processed` in the local database (302 chunks). Alembic head `8c1d5e7a2b96`. Evaluation set: `data/eval/questions.json` (version 5, 52 questions). Kept runs: `data/eval/results/`. Numbers: DECISIONS E-4 (evaluation) and E-5 (Airflow), D-48 (UI).
+- **Run it locally:** `docker compose up -d` (PostgreSQL, MinIO), then `uv run uvicorn app.main:app --reload`, then `uv run --group ui streamlit run ui/app.py` (http://localhost:8501; the first start asks for an email: press Enter). Airflow has its own compose, see `airflow/README.md`: unpause the DAG once, pause it when you stop working. Set `PRELOAD_EMBEDDING_MODEL=true` in your real `.env` (not only in `.env.example`) so the model loads at API start; the UI shows its status (D-49).
+- **Data state:** the 14 corpus PDFs in `data/corpus/` are all `processed` in the local database (302 chunks). Alembic head `8c1d5e7a2b96`. Evaluation set: `data/eval/questions.json` (version 5, 52 questions). Kept runs: `data/eval/results/`. Numbers: DECISIONS E-4 (evaluation), E-5 (Airflow), D-48 (UI), D-49 (model load, 26.3 s on 2026-10-23).
 - **LLM:** `gemini-3.5-flash-lite` on the Gemini API free tier. Limits: `docs/provider_limits.md`. Data-use terms: DECISIONS D-36.
 - **Rules in force:**
   - Only fictional or openly licensed documents may go to Gemini (free tier may use the data), also in manual tests of the UI. The ISO 27001 PDF stays local. Never upload a personal file to test.
@@ -23,6 +23,7 @@ Updated: 2026-10-23, Phase 9 done (last tag: `phase-9`). Phase 10 has not starte
   - The AI never writes citations; code builds them from stored chunks.
   - Airflow only schedules and runs; ingestion and status logic stay in `app/` (D-45). A change of `pyproject.toml` or `uv.lock` needs `docker compose build` in `airflow/`; a change in `app/` or `scripts/` does not.
   - The UI is an HTTP client of the API and imports nothing from `app/` (I15, D-47, D-48).
+  - While editing API code with `--reload`, set `PRELOAD_EMBEDDING_MODEL=false`: every save reloads the model (D-49).
   - Docs are changed once, at the end of a phase. In the middle of a phase only a decision record, and only when code depends on it.
   - Resources: the Docker VM has 8 GB. One ingestion peaks at about 5.2 GB (E-5): close heavy apps while it runs.
 - **Next action:** Phase 10, step 1: the 30-minute radar (does anything in the tools in use change a decision?), then write the Phase 10 plan, exit conditions and limit here, before any code.
@@ -54,7 +55,7 @@ Updated: 2026-10-23, Phase 9 done (last tag: `phase-9`). Phase 10 has not starte
 | 14 | Production quality | planned | logging, monitoring, reliability, improvements justified by evaluation |
 | 15 | Portfolio | planned | repo understandable by a stranger |
 
-Completed phases are not re-described here. For what each one built, read ARCHITECTURE. For why, read DECISIONS (Phase 8: D-43 to D-46, E-5; Phase 9: D-47, D-48). Git tags mark the end of phases (`phase-N`).
+Completed phases are not re-described here. For what each one built, read ARCHITECTURE. For why, read DECISIONS (Phase 8: D-43 to D-46, E-5; Phase 9: D-47 to D-49). Git tags mark the end of phases (`phase-N`).
 
 **Milestones reached:** 1 backend foundation (end of Phase 2), 2 AI knowledge pipeline (Phase 4), 3 working AI assistant (Phase 6), 4 evaluated system (Phase 7), 5 automated ingestion (Phase 8), 6 usable product in a browser (Phase 9).
 **Milestones ahead:** 7 complete local product (Phase 10), 8 cloud deployment (Phase 13).
@@ -73,7 +74,7 @@ Plan, exit conditions and exchange limit are written at the start of the phase (
 
 - The image is large (Docling, CPU PyTorch, sentence-transformers). Models need a persistent volume or a build step. Phase 8 already built such an image for Airflow (`airflow/Dockerfile`: the app in its own virtual environment from `uv.lock`); reuse that approach. There the code is mounted, not baked: an app image must bake it.
 - `HF_TOKEN` and `GEMINI_API_KEY` are secrets passed at runtime, never baked into an image or committed.
-- First request loads the embedding model lazily (about 34 s measured in Phase 9, D-48). In containers run offline with a pre-downloaded model; decide then between preloading at startup and lazy loading.
+- The API preloads the embedding model in the background (D-49, 26.3 s measured on 2026-10-23). In containers run offline with a pre-downloaded model, and use `GET /health/model` as the container health check.
 - The UI becomes its own small container (it only needs Streamlit and `requests`; its dependency group is separate, D-47).
 
 ## Phase 12: AWS deployment
@@ -118,11 +119,9 @@ Plan, exit conditions and exchange limit are written at the start of the phase (
 - Models in the Airflow image: the embedding model is in the `hf-cache` volume, but the RapidOCR models (about 100 s of download) live in the container layer and are fetched again when the container is recreated. Check Docling's documented way to pre-download them first. Natural place: Phase 11.
 - Ingestion edge cases: a document that kills the worker is reset and retried at every run (no attempt counter); the reset of stuck documents assumes no manual ingestion runs at the same time.
 - Cold start: the first run of an ingestion task took about 66 s before the work started, a retry only 9 s (E-5). Disk cache on the HDD is the suspected cause, not proven. Measure again on an SSD or on AWS before tuning anything.
-- Docs over the size budget (ENGINEERING_STANDARDS section 13): at the last measure (2026-10-22, before the Phase 9 end pass) README 12084 bytes, ARCHITECTURE 24571, DECISIONS 34906. Re-measure at the start of Phase 10. Compress D-43 to D-46 and E-1 to E-3 once Phases 11 and 12 have settled them (their revisit points).
-- Docs to update at the end of Phase 10, after D-49 (they still describe lazy loading): ARCHITECTURE sections 8 and 13 (model loads in the background at start when `PRELOAD_EMBEDDING_MODEL=true`, lock and `/health/model`, measured 26.3 s on 2026-10-23, new row in the API table, new setting in section 11); README (setting, `/health/model`, remove "the first question is slow"); handoff line "Last verified" (test count).
+- Docs over the size budget (ENGINEERING_STANDARDS section 13), measured 2026-10-23 at the end of the Phase 9 pass, before the D-49 text: README 11364 bytes (budget about 8000), ARCHITECTURE 27597 (20000), DECISIONS 37495 (30000). Box-drawing characters count 3 bytes each, so the real text is shorter. Re-measure at the start of Phase 10. Compress D-43 to D-46 and E-1 to E-3 once Phases 11 and 12 have settled them (their revisit points).
 - Map `ValueError` from services to an HTTP error for callers that skip the schemas.
 - Check accent display in PowerShell 5.1.
-- A red error appeared once on the first UI question after a restart; it was not reproduced and its text was not captured (D-48). If it comes back, copy the exact text.
 - Evaluation gaps: source matching is page-level, so a chunk on the right page counts even if it lacks the fact; a qualified answer (q16, q24) is judged by hand because the refusal metric only reads `found`. Literal fact matching was tried and rejected (D-41).
 - Typos in expected facts of `questions.json` (q02 "untilyou", q45 "givenas"); "10-2027" typo in `data/corpus/SOURCES.md`; the Dress Code and Handbook PDFs share the document id NS-HR-POL-005.
 
