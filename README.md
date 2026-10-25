@@ -3,6 +3,7 @@
 An internal knowledge assistant. Employees ask questions in natural language about company documents and get answers grounded in those documents, with citations to the source file, page and section. When the documents do not answer, the system says so instead of guessing.
 
 > **Status:** work in progress. The current phase and the plan are in [ROADMAP.md](ROADMAP.md).
+> **Unverified:** the Docker start below works on the author's machine. It has not yet been followed from a clean machine (ROADMAP, open questions).
 
 ## How it works
 
@@ -20,81 +21,66 @@ Citations are built by code from the stored chunks; the model only says which nu
 | Object storage | MinIO locally, S3 on AWS (boto3) |
 | Document processing | Docling, HybridChunker (CPU-only PyTorch) |
 | AI | EmbeddingGemma (local embeddings), Gemini API (generation), RAG |
-| Orchestration | Apache Airflow 3 (LocalExecutor, Docker Compose) |
+| Orchestration | Apache Airflow 3 (LocalExecutor) |
 | UI | Streamlit (an HTTP client of the API) |
+| Run | Docker Compose, one file for the whole system |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
-| Planned | Docker image for the app, AWS (EC2, RDS, S3), Terraform |
+| Planned | AWS (EC2, RDS, S3), Terraform |
 
-## Getting started
+## Quick start (Docker)
 
-Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker (8 GB of memory for Airflow), a free Hugging Face account (EmbeddingGemma is gated) and a Gemini API key (for questions).
+**You need:** Docker Desktop with at least 8 GB of memory for Docker, about 25 GB of free disk, internet for the first build, a free [Hugging Face](https://huggingface.co) account and a Gemini API key ([Google AI Studio](https://aistudio.google.com/apikey)).
 
-**One-time setup**
-
-```powershell
-uv sync
-```
+1. Open https://huggingface.co/google/embeddinggemma-300m while logged in and accept the license (the model is gated). Create a token with read access in your Hugging Face settings.
+2. Create your settings file (Windows PowerShell; on Linux or macOS use `cp`):
 
 ```powershell
 copy .env.example .env
 ```
 
-Edit `.env`: set `GEMINI_API_KEY` (create one in [Google AI Studio](https://aistudio.google.com/apikey); never put it in `.env.example` or Git) and `PRELOAD_EMBEDDING_MODEL=true`. The template alone changes nothing: the real `.env` must be edited.
-
-EmbeddingGemma: open https://huggingface.co/google/embeddinggemma-300m while logged in, accept the license, then run this once per machine (the token is saved outside the repository):
+3. Edit `.env` and set the two required values: `HF_TOKEN` (used once, at build time, to put the model into the images; it is never stored in them) and `GEMINI_API_KEY` (needed for questions, not for ingestion). Everything else works as it is. Never commit `.env`.
+4. Build and start everything:
 
 ```powershell
-uv run hf auth login
+docker compose up -d --build
 ```
 
-Optional, on Windows: keep large downloads off C: by setting `UV_CACHE_DIR` and `HF_HOME` (User environment variables) to a folder on another drive, then open a new terminal.
+The first build downloads and bakes in the models: 30 to 90 minutes on a hard disk, about 16 GB of images (API 5.5 GB, Airflow 9.4 GB, UI 0.7 GB). Later starts take seconds.
 
-**Every session**, in this order, each in its own terminal, from the project root:
+| Address | What |
+|---|---|
+| http://localhost:8501 | UI (upload, status, questions) |
+| http://localhost:8000/docs | API docs. Health: `/health`, `/health/db`, `/health/model` |
+| http://localhost:8080 | Airflow (login `airflow` / `airflow`, local use only) |
+| http://localhost:9001 | MinIO console |
+
+The embedding model loads in the background at start (about 30 s, longer on a cold disk); the UI status line shows "Model: ready" when questions can be answered.
+
+**Stop and start again** (your documents stay):
+
+```powershell
+docker compose down
+```
 
 ```powershell
 docker compose up -d
 ```
 
-```powershell
-uv run alembic upgrade head
-```
+`docker compose down -v` also deletes the database and the stored files. After any change to `app/`, `scripts/`, `airflow/dags/`, `pyproject.toml` or `uv.lock`, run `docker compose up -d --build` again. After a change of `GEMINI_API_KEY` in `.env`, run `docker compose up -d`.
+
+**Load the test corpus.** The database starts empty. A fictional corpus of 14 policy PDFs is in `data/corpus/` (origin: `data/corpus/SOURCES.md`). Upload them through the API; Airflow ingests one document at a time, about 3 to 4 minutes each, so the whole corpus takes about an hour:
 
 ```powershell
-uv run uvicorn app.main:app
+Get-ChildItem data\corpus\*.pdf | ForEach-Object { curl.exe -s -F "file=@$($_.FullName);type=application/pdf" http://localhost:8000/api/v1/documents }
 ```
 
-```powershell
-uv run --group ui streamlit run ui/app.py
-```
-
-Airflow has its own compose: [airflow/README.md](airflow/README.md). Unpause the DAG `ingest_documents` once; pause it when you stop working.
-
-- UI: http://localhost:8501 (the first start asks for an email: press Enter).
-- API docs: http://localhost:8000/docs. Health: `/health`, `/health/db`, `/health/model`. MinIO console: http://localhost:9001.
-- If the API runs elsewhere, set `API_URL` for the UI (default `http://localhost:8000`).
-- With `--reload` every code save reloads the model: add it only while editing API code, with `PRELOAD_EMBEDDING_MODEL=false`.
-
-**Model preload.** The API loads the embedding model in the background at start (about 26 s, longer on a cold disk) and answers requests meanwhile. `GET /health/model` returns `503 loading`, then `200 ready`; the UI shows the same in its status line. A question asked before it is ready waits for the load.
-
-**Check the Gemini connection** with two real calls on a fictional cafe:
-
-```powershell
-uv run python -m scripts.smoke_gemini
-```
-
-**Privacy.** On the free tier Google may use prompts and responses to improve its products. Send only fictional, openly licensed or non-sensitive documents through questions (and upload only such documents). Only questions call Gemini; ingestion, embeddings and search run locally. Details: [DECISIONS.md](DECISIONS.md) (D-28, D-36), `docs/provider_limits.md`.
+**Privacy.** On the free tier Google may use prompts and responses to improve its products. Upload and ask about only fictional, openly licensed or non-sensitive documents. Only questions call Gemini; ingestion, embeddings and search run locally. Details: [DECISIONS.md](DECISIONS.md) (D-28, D-36), `docs/provider_limits.md`.
 
 ## Usage
 
-The UI covers upload, status and questions (the file picker allows up to 20 MB, set in `.streamlit/config.toml`). The same calls are in the API docs at `/docs`.
+The UI covers upload, status and questions (file picker limit 20 MB, set in `.streamlit/config.toml`). The same calls are in the API docs.
 
-**Upload.** `POST /api/v1/documents` (PDF only, up to `MAX_UPLOAD_MB`, default 20). A fictional test corpus of 14 policy PDFs is in `data/corpus/` (origin: `data/corpus/SOURCES.md`).
-
-```powershell
-curl.exe -F "file=@C:\path\to\your.pdf;type=application/pdf" http://localhost:8000/api/v1/documents
-```
-
-**List and status.** `GET /api/v1/documents?limit=20&offset=0` (newest first). `GET /api/v1/documents/<id>` shows one document. With Airflow running, the status moves on within about a minute:
+**Upload.** `POST /api/v1/documents` (PDF only, up to 20 MB). **List and status.** `GET /api/v1/documents?limit=20&offset=0` (newest first), `GET /api/v1/documents/<id>`. The status moves on within about a minute:
 
 | Status | Meaning |
 |---|---|
@@ -111,33 +97,55 @@ docker exec enterprise-doc-intelligence-postgres psql -U app -d enterprise_docs 
 
 **Delete.** `DELETE /api/v1/documents/<id>` removes the document, its chunks and its file (`204`; `404` unknown id; `409` while it is `processing`). There is no authentication yet.
 
-**Ingest without Airflow** (pause the DAG first). One stored document, or a whole folder (look first, then `--run`; already ingested files are skipped):
-
-```powershell
-uv run python -m scripts.ingest_document <document_id>
-```
-
-```powershell
-uv run python -m scripts.ingest_folder data/corpus --run
-```
-
-**Ask.** `POST /api/v1/ask` with `{"question": "How many vacation days do employees get per year?", "top_k": 8}`. `top_k` is optional (1 to 20, default 8): how many chunks are retrieved and sent to Gemini. The response has `answer` (in the language of the question), `found` (`false` when the documents do not answer, with no citations) and `citations` (`filename`, `page_numbers`, `heading`, `document_id`, `text`). Accented text in PowerShell 5.1 can display wrongly: check in `/docs` before suspecting the code. If Gemini is unreachable or out of quota, the API returns `502`; the reason is in the server log.
+**Ask.** `POST /api/v1/ask` with `{"question": "How many vacation days do employees get per year?", "top_k": 8}`. `top_k` is optional (1 to 20, default 8). The response has `answer` (in the language of the question), `found` (`false` when the documents do not answer, with no citations) and `citations` (`filename`, `page_numbers`, `heading`, `document_id`, `text`). If Gemini is unreachable, out of quota or the key is missing, the API returns `502`; the reason is in the API log (`docker compose logs api`).
 
 **Inspect retrieval without Gemini.** `POST /api/v1/search` returns the retrieved chunks and their similarity, best first: it shows whether a bad answer came from retrieval or from generation.
 
-**Pipeline only.** Put a PDF in `data/sample_docs/` (git-ignored) and print its chunks without storing anything: `uv run python -m scripts.run_pipeline "data/sample_docs/your.pdf"`.
-
 ## Check the whole system
 
-With everything running (API, Airflow with the DAG unpaused, a Gemini key), this uploads a fictional PDF, waits for ingestion, checks search, one answer and one refusal, then deletes it. About 5 minutes and 2 Gemini requests. Set `API_URL` to test another environment.
+With the stack running and a Gemini key set, this uploads a fictional PDF, waits for ingestion, checks search, one answer and one refusal, then deletes it. About 5 minutes and 2 Gemini requests. It needs [uv](https://docs.astral.sh/uv/) on the host; set `API_URL` to test another environment.
 
 ```powershell
 uv run python -m scripts.e2e_check
 ```
 
+## Develop outside Docker
+
+For changing the code with fast reloads. Needs Python 3.12 and uv. Free the ports first, and start only the storage containers:
+
+```powershell
+docker compose stop api ui
+```
+
+```powershell
+uv sync
+```
+
+```powershell
+uv run hf auth login
+```
+
+```powershell
+docker compose up -d postgres minio minio-init
+```
+
+```powershell
+uv run alembic upgrade head
+```
+
+```powershell
+uv run uvicorn app.main:app
+```
+
+```powershell
+uv run --group ui streamlit run ui/app.py
+```
+
+The host uses the localhost values in `.env`; set `PRELOAD_EMBEDDING_MODEL=true` there (turn it off while using `--reload`, which reloads the model on every save). Optional on Windows: keep large downloads off C: by setting `UV_CACHE_DIR` and `HF_HOME` to a folder on another drive.
+
 ## Evaluate
 
-A 52-question set (`data/eval/questions.json`) and a runner; PostgreSQL must be running and the corpus ingested. Results go to `data/eval/runs/` (git-ignored); a full run also writes a `.review.md` for hand review. Kept results: [DECISIONS.md](DECISIONS.md) (E-4). A full run uses about 52 of the 500 free Gemini requests of a day.
+A 52-question set (`data/eval/questions.json`) and a runner. It runs on the host (see above), with PostgreSQL running and the corpus ingested. Results go to `data/eval/runs/` (git-ignored); a full run also writes a `.review.md` for hand review. Kept results: [DECISIONS.md](DECISIONS.md) (E-4). A full run uses about 52 of the 500 free Gemini requests of a day.
 
 ```powershell
 uv run python -m scripts.evaluate --retrieval-only
@@ -147,7 +155,7 @@ uv run python -m scripts.evaluate --retrieval-only
 uv run python -m scripts.evaluate --label mytest
 ```
 
-## Development
+## Development checks
 
 Run before every push (the pre-push hook runs it too). Start the containers first, or the integration tests skip.
 
@@ -155,17 +163,18 @@ Run before every push (the pre-push hook runs it too). Start the containers firs
 .\scripts\check.ps1
 ```
 
-Unit tests use fakes: no Docling or model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO and skip themselves when unavailable. Test file names must be unique across `tests/`. CI has no Airflow: the DAG is checked in the container with `airflow dags list-import-errors`. The Streamlit screens are checked by hand.
+Unit tests use fakes: no Docling or model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO and skip themselves when unavailable. CI does not build the Docker images (the gated model needs a token); the images are checked by the end-to-end script. The Streamlit screens are checked by hand.
 
 ## Known limitations
 
+* **Resources:** the whole system needs about 2.4 GB of memory at idle and about 7 GB during one ingestion. On an 8 GB Docker VM the margin is thin: close heavy applications while a document is processed.
+* No authentication: anyone who can reach the API can upload and delete, and the Airflow login is the default.
 * Text and tables inside images are unreliable; a table can lose its header row or split across chunks. Some headings are wrong or missing, so the page number is the most reliable part of a citation.
 * No similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation. On the evaluation set it refused every question the documents cannot answer.
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (E-4).
-* No authentication: anyone who can reach the API can upload and delete.
 * Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
 
-Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and the backlog in [ROADMAP.md](ROADMAP.md).
+Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4 to E-6) and the backlog in [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 
@@ -173,4 +182,4 @@ Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4, E-5) and t
 * [ARCHITECTURE.md](ARCHITECTURE.md): how the system works today
 * [DECISIONS.md](DECISIONS.md): why each choice was made
 * [ROADMAP.md](ROADMAP.md): plan and progress
-* [airflow/README.md](airflow/README.md): running Airflow
+* [airflow/README.md](airflow/README.md): the Airflow image and the DAG
