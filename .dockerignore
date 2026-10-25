@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+**/.env
+.pytest_cache
+.ruff_cache
+**/__pycache__
+data
+docs
+tests
+airflow/logs
+airflow/config
+airflow/plugins
+*.md
+!README.md

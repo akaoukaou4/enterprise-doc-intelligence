@@ -1,102 +1,241 @@
 # =============================================================================
-# Enterprise Document Intelligence - Local Infrastructure
-# Services: PostgreSQL + pgvector, MinIO
-# MinIO initialization: one-time bucket creation via MinIO Client
+# Enterprise Document Intelligence: the whole system, one command.
+#   copy .env.example .env   (set HF_TOKEN and GEMINI_API_KEY)
+#   docker compose up -d --build
+# UI http://localhost:8501 | API http://localhost:8000/docs
+# Airflow http://localhost:8080 (airflow / airflow) | MinIO console :9001
+# Containers reach each other by service name, never by localhost.
 # =============================================================================
+name: enterprise-doc-intelligence
+
+# Settings every app container shares (the code reads them through Settings).
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:-app_password}@postgres:5432/enterprise_docs # pragma: allowlist secret
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin} # pragma: allowlist secret
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123} # pragma: allowlist secret
+  MINIO_BUCKET: documents
+  HF_HUB_OFFLINE: "1"
+
+x-airflow-common: &airflow-common
+  image: enterprise-doc-airflow:3.3.2
+  user: "${AIRFLOW_UID:-50000}:0"
+  restart: on-failure
+  environment: &airflow-env
+    <<: *app-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow # pragma: allowlist secret
+    # Nothing secret is stored in Airflow, so an empty key is acceptable here.
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret} # pragma: allowlist secret
+    AIRFLOW__API_AUTH__JWT_ISSUER: airflow
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  volumes:
+    - airflow-logs:/opt/airflow/logs
 
 services:
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL + pgvector
+  # Storage
   # ---------------------------------------------------------------------------
   postgres:
     image: pgvector/pgvector:pg18
     container_name: enterprise-doc-intelligence-postgres
     restart: unless-stopped
-
     environment:
       POSTGRES_DB: enterprise_docs
       POSTGRES_USER: app
-      POSTGRES_PASSWORD: app_password # pragma: allowlist secret
-
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_password} # pragma: allowlist secret
     ports:
-      # Host 5433 -> Container 5432
-      # Host PostgreSQL already uses 5432.
-      - "5433:5432"
-
+      - "5433:5432" # for tools on the host; containers use postgres:5432
     volumes:
       - postgres_data:/var/lib/postgresql
-
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U app -d enterprise_docs" ]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # ---------------------------------------------------------------------------
-  # MinIO - local S3-compatible object storage
-  # ---------------------------------------------------------------------------
   minio:
     image: ghcr.io/coollabsio/minio:latest
     container_name: enterprise-doc-intelligence-minio
     restart: unless-stopped
-
-    command:
-      - server
-      - /data
-      - --console-address
-      - ":9001"
-
+    command: [ server, /data, --console-address, ":9001" ]
     environment:
-      MINIO_ROOT_USER: minioadmin # pragma: allowlist secret
-      MINIO_ROOT_PASSWORD: minioadmin123 # pragma: allowlist secret
-
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin} # pragma: allowlist secret
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123} # pragma: allowlist secret
     ports:
-      # S3 API
       - "9000:9000"
-
-      # MinIO Web Console
       - "9001:9001"
-
     volumes:
       - minio_data:/data
 
-  # ---------------------------------------------------------------------------
-  # MinIO initialization / readiness check
-  #
-  # Waits until MinIO accepts S3 connections, then creates the application
-  # bucket if it does not already exist.
-  # ---------------------------------------------------------------------------
   minio-init:
     image: pgsty/mc:latest
     container_name: enterprise-doc-intelligence-minio-init
     restart: "no"
-
     depends_on:
       minio:
         condition: service_started
-
     entrypoint:
       - /bin/sh
       - -c
       - |
-        until mc alias set local http://minio:9000 minioadmin minioadmin123 2>/dev/null; do  # pragma: allowlist secret
+        until mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin123} 2>/dev/null; do
           echo "Waiting for MinIO..."
           sleep 2
         done
-
-        echo "MinIO is ready."
-
         mc mb --ignore-existing local/documents
-
         echo "Bucket 'documents' is ready."
 
-# =============================================================================
-# Persistent volumes
-# =============================================================================
+  # ---------------------------------------------------------------------------
+  # Application
+  # ---------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets: [ hf_token ]
+    image: enterprise-doc-api:latest
+    restart: "no"
+    command: [ alembic, upgrade, head ]
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: enterprise-doc-api:latest
+    pull_policy: never
+    restart: on-failure
+    mem_limit: 3g
+    environment:
+      <<: *app-env
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PRELOAD_EMBEDDING_MODEL: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    image: enterprise-doc-ui:latest
+    restart: on-failure
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Ingestion (Airflow). Its own metadata database, as before (D-43).
+  # ---------------------------------------------------------------------------
+  airflow-db:
+    image: postgres:16
+    restart: on-failure
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow # pragma: allowlist secret
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  airflow-init:
+    <<: *airflow-common
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+      secrets: [ hf_token ]
+    restart: "no"
+    entrypoint: /bin/bash
+    command: [ -c, "/entrypoint airflow version" ]
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow} # pragma: allowlist secret
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+
+  airflow-apiserver:
+    <<: *airflow-common
+    pull_policy: never
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    pull_policy: never
+    command: scheduler
+    healthcheck:
+      test: [ "CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"' ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    pull_policy: never
+    command: dag-processor
+    healthcheck:
+      test: [ "CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"' ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+# The gated embedding model is downloaded at build time with this token.
+# It is a build secret: it is never written into an image layer.
+secrets:
+  hf_token:
+    environment: HF_TOKEN
+
 volumes:
   postgres_data:
     name: enterprise-doc-intelligence_postgres_data
-
   minio_data:
     name: enterprise-doc-intelligence_minio_data
+  airflow-db-volume:
+  airflow-logs:
