@@ -41,7 +41,7 @@ See the services and their health:
 docker compose ps
 ```
 
-Scheduler log (where the ingestion output goes):
+Scheduler log (service messages only; the output of a task is in its task log in the UI, see below):
 
 ```powershell
 docker compose logs airflow-scheduler --tail 50
