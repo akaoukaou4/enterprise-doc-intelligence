@@ -1,0 +1,41 @@
+# AWS override. Use with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build
+# Local postgres and MinIO are switched off (profile "local"): RDS and S3 replace them.
+# Needs in .env on the server: RDS_HOST, RDS_PASSWORD, HF_TOKEN, GEMINI_API_KEY.
+
+x-aws-app-env: &aws-app-env
+  DATABASE_URL: postgresql+psycopg://appadmin:${RDS_PASSWORD:?set RDS_PASSWORD}@${RDS_HOST:?set RDS_HOST}:5432/enterprise_docs?sslmode=require # pragma: allowlist secret
+  MINIO_ENDPOINT: ""
+  MINIO_ACCESS_KEY: ""
+  MINIO_SECRET_KEY: ""
+  MINIO_BUCKET: enterprise-doc-intel-483920
+  AWS_DEFAULT_REGION: eu-north-1
+
+services:
+  postgres:
+    profiles: [ local ]
+  minio:
+    profiles: [ local ]
+  minio-init:
+    profiles: [ local ]
+
+  migrate:
+    depends_on: !reset null
+    environment:
+      <<: *aws-app-env
+
+  api:
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *aws-app-env
+
+  airflow-scheduler:
+    depends_on: !override
+      airflow-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *aws-app-env
