@@ -3,7 +3,7 @@
 An internal knowledge assistant. Employees ask questions in natural language about company documents and get answers grounded in those documents, with citations to the source file, page and section. When the documents do not answer, the system says so instead of guessing.
 
 > **Status:** work in progress. The current phase and the plan are in [ROADMAP.md](ROADMAP.md).
-> **Unverified:** the Docker start below works on the author's machine. It has not yet been followed from a clean machine (ROADMAP, open questions).
+> **Unverified:** the Docker start below works on the author's machine, and the AWS section was followed once by the author. Neither has been followed from a clean machine by someone else (ROADMAP, open questions).
 
 ## How it works
 
@@ -24,8 +24,9 @@ Citations are built by code from the stored chunks; the model only says which nu
 | Orchestration | Apache Airflow 3 (LocalExecutor) |
 | UI | Streamlit (an HTTP client of the API) |
 | Run | Docker Compose, one file for the whole system |
+| Cloud | AWS: EC2, RDS PostgreSQL, S3, IAM, SSM (built by hand, [ARCHITECTURE.md](ARCHITECTURE.md) section 12.2) |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
-| Planned | AWS (EC2, RDS, S3), Terraform |
+| Planned | Terraform |
 
 ## Quick start (Docker)
 
@@ -45,7 +46,7 @@ copy .env.example .env
 docker compose up -d --build
 ```
 
-The first build downloads and bakes in the models: 30 to 90 minutes on a hard disk, about 16 GB of images (API 5.5 GB, Airflow 9.4 GB, UI 0.7 GB). Later starts take seconds.
+The first build downloads and bakes in the models: 30 to 90 minutes on a hard disk (about 10 minutes on the AWS instance's SSD), about 16 GB of images on the laptop. Later starts take seconds.
 
 | Address | What |
 |---|---|
@@ -68,7 +69,7 @@ docker compose up -d
 
 `docker compose down -v` also deletes the database and the stored files. After any change to `app/`, `scripts/`, `airflow/dags/`, `pyproject.toml` or `uv.lock`, run `docker compose up -d --build` again. After a change of `GEMINI_API_KEY` in `.env`, run `docker compose up -d`.
 
-**Load the test corpus.** The database starts empty. A fictional corpus of 14 policy PDFs is in `data/corpus/` (origin: `data/corpus/SOURCES.md`). Upload them through the API; Airflow ingests one document at a time, about 3 to 4 minutes each, so the whole corpus takes about an hour:
+**Load the test corpus.** The database starts empty. A fictional corpus of 14 policy PDFs is in `data/corpus/` (origin: `data/corpus/SOURCES.md`). Upload them through the API; Airflow ingests one document at a time, about 3 to 4 minutes each, so the whole corpus takes about an hour (about 40 minutes on AWS):
 
 ```powershell
 Get-ChildItem data\corpus\*.pdf | ForEach-Object { curl.exe -s -F "file=@$($_.FullName);type=application/pdf" http://localhost:8000/api/v1/documents }
@@ -95,7 +96,7 @@ The reason for a failure is in the Airflow UI (DAG `ingest_documents`, the red r
 docker exec enterprise-doc-intelligence-postgres psql -U app -d enterprise_docs -c "update documents set status = 'uploaded' where id = '<document_id>'"
 ```
 
-**Delete.** `DELETE /api/v1/documents/<id>` removes the document, its chunks and its file (`204`; `404` unknown id; `409` while it is `processing`). There is no authentication yet.
+**Delete.** `DELETE /api/v1/documents/<id>` removes the document, its chunks and its file (`204`; `404` unknown id; `409` while it is `processing`). There is no authentication in the app.
 
 **Ask.** `POST /api/v1/ask` with `{"question": "How many vacation days do employees get per year?", "top_k": 8}`. `top_k` is optional (1 to 20, default 8). The response has `answer` (in the language of the question), `found` (`false` when the documents do not answer, with no citations) and `citations` (`filename`, `page_numbers`, `heading`, `document_id`, `text`). If Gemini is unreachable, out of quota or the key is missing, the API returns `502`; the reason is in the API log (`docker compose logs api`).
 
@@ -108,6 +109,20 @@ With the stack running and a Gemini key set, this uploads a fictional PDF, waits
 ```powershell
 uv run python -m scripts.e2e_check
 ```
+
+## AWS
+
+The same compose and images run on one EC2 server, with RDS PostgreSQL (pgvector) and S3 instead of the local database and MinIO. It was built by hand in the console (Terraform is the next phase), and nothing is reachable from the internet: the server has no inbound rule, and you open the UI through an SSM tunnel. The full description, the resource list, the delete order, the start and stop steps and the tunnel commands are in [ARCHITECTURE.md](ARCHITECTURE.md) section 12.2; the reasons are in [DECISIONS.md](DECISIONS.md) (D-55 to D-60). Short version of the tunnel, after installing the AWS CLI and the Session Manager plugin:
+
+```powershell
+aws login
+```
+
+```powershell
+aws ssm start-session --region eu-north-1 --target <instance-id> --document-name AWS-StartPortForwardingSession --parameters "portNumber=8501,localPortNumber=18501"
+```
+
+Then open http://localhost:18501. Run `aws logout` when you are done. The AWS account is on the Free plan, which ends on 2027-04-29, and the stopped resources still cost a little: stop RDS and EC2 when you do not use them (a stopped RDS restarts itself after 7 days).
 
 ## Develop outside Docker
 
@@ -141,7 +156,7 @@ uv run uvicorn app.main:app
 uv run --group ui streamlit run ui/app.py
 ```
 
-The host uses the localhost values in `.env`; set `PRELOAD_EMBEDDING_MODEL=true` there (turn it off while using `--reload`, which reloads the model on every save). Optional on Windows: keep large downloads off C: by setting `UV_CACHE_DIR` and `HF_HOME` to a folder on another drive.
+The host uses the localhost values in `.env`; set `PRELOAD_EMBEDDING_MODEL=true` there (turn it off while using `--reload`, which reloads the model on every save). Optional on Windows: keep large downloads off C: by setting `UV_CACHE_DIR` and `HF_HOME` to a folder on another drive. If you also use VMware, note that Docker needs Virtual Machine Platform and Windows Hypervisor Platform turned on in Windows features.
 
 ## Evaluate
 
@@ -163,18 +178,19 @@ Run before every push (the pre-push hook runs it too). Start the containers firs
 .\scripts\check.ps1
 ```
 
-Unit tests use fakes: no Docling or model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO and skip themselves when unavailable. CI does not build the Docker images (the gated model needs a token); the images are checked by the end-to-end script. The Streamlit screens are checked by hand.
+Unit tests use fakes: no Docling or model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO and skip themselves when unavailable. CI does not build the Docker images (the gated model needs a token); the images are checked by the end-to-end script. The Streamlit screens are checked by hand. `docker-compose.aws.yml` uses the Compose tags `!reset` and `!override`, so the YAML check in pre-commit runs in its syntax-only mode.
 
 ## Known limitations
 
-* **Resources:** the whole system needs about 2.4 GB of memory at idle and about 7 GB during one ingestion. On an 8 GB Docker VM the margin is thin: close heavy applications while a document is processed.
-* No authentication: anyone who can reach the API can upload and delete, and the Airflow login is the default.
+* **Resources:** the whole system needs about 2.4 GB of memory at idle and about 7 GB during one ingestion, on the laptop and on the 8 GiB AWS instance alike. The margin is thin (on AWS the peak used the swap file): close heavy applications while a document is processed, and ingest one document at a time.
+* **Access:** the app has no authentication. Locally, anyone who can reach the ports can upload and delete, and the Airflow login is the default. On AWS the network closes the access instead (no public port), so a demo for other people is a recording, not a link.
 * Text and tables inside images are unreliable; a table can lose its header row or split across chunks. Some headings are wrong or missing, so the page number is the most reliable part of a citation.
 * No similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation. On the evaluation set it refused every question the documents cannot answer.
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (E-4).
 * Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
+* The cost of the AWS usage was not measured yet (ROADMAP, open question 2).
 
-Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4 to E-6) and the backlog in [ROADMAP.md](ROADMAP.md).
+Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4 to E-7) and the backlog in [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 
