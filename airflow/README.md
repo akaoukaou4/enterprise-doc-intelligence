@@ -75,5 +75,5 @@ To upgrade Airflow, change the tag in `airflow/Dockerfile`, then compare our com
 - **Size.** The image is about 9.4 GB because it carries the Docling and embedding models, and the API image carries the embedding model too.
 - **Offline.** `HF_HUB_OFFLINE=1` is set, so Hugging Face is not contacted. Whether ingestion runs with no internet at all (the OCR models) was not tested.
 - **Retries.** A document that kills the worker is reset and retried at every run; there is no attempt counter. The reset assumes no manual ingestion runs at the same moment.
-- **Security.** The Airflow login is the default and the port is published. This is for local use; Phase 12 decides access.
+- **Security.** The Airflow login is the default (`airflow` / `airflow`). Locally the port is published on the host; on AWS no port is reachable from the internet and the UI is only reachable through the SSM tunnel (DECISIONS D-56).
 - A cold first start of a task can take about a minute before the work begins (E-5); the cause is not proven.
