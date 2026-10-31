@@ -121,3 +121,9 @@ airflow/.env
 airflow/logs/
 airflow/config/
 airflow/plugins/
+
+# Terraform: state holds secrets, never commit it. The lock file IS committed.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars
