@@ -11,6 +11,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import setup_logging
+from app.core.middleware import RequestLogMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
     register_error_handlers(app)
+    app.add_middleware(RequestLogMiddleware)
 
     app.include_router(health_router)  # operational, unversioned
     app.include_router(api_router)  # /api/v1/...
