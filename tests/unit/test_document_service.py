@@ -1,9 +1,16 @@
+import hashlib
 import uuid
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
-from app.core.errors import ExternalServiceError, NotFoundError, ValidationFailedError
+from app.core.errors import (
+    ConflictError,
+    ExternalServiceError,
+    NotFoundError,
+    ValidationFailedError,
+)
 from app.db.models import Document
 from app.services.documents import DocumentService
 
@@ -30,12 +37,17 @@ class FakeSession:
         self.added: list[Document] = []
         self.rolled_back = False
         self.fail_commit = False
+        self.fail_commit_duplicate = False
         self.existing: Document | None = None
+        # Id of a document with the same content hash; None means "no duplicate".
+        self.duplicate_id: uuid.UUID | None = None
 
     def add(self, obj: Document) -> None:
         self.added.append(obj)
 
     def commit(self) -> None:
+        if self.fail_commit_duplicate:
+            raise IntegrityError("insert", {}, Exception("duplicate content_sha256"))
         if self.fail_commit:
             raise RuntimeError("db down")
 
@@ -47,6 +59,9 @@ class FakeSession:
 
     def get(self, model, document_id):
         return self.existing
+
+    def scalar(self, statement):
+        return self.duplicate_id
 
 
 def _service(db: FakeSession, storage: FakeStorage, max_upload_mb: int = 1) -> DocumentService:
@@ -65,6 +80,12 @@ def test_create_uploads_file_and_inserts_row() -> None:
     assert document.storage_key == f"documents/{document.id}/policy.pdf"
     assert storage.uploaded[document.storage_key] == PDF
     assert db.added == [document]
+
+
+def test_create_stores_the_content_hash() -> None:
+    document = _service(FakeSession(), FakeStorage()).create("a.pdf", "application/pdf", PDF)
+
+    assert document.content_sha256 == hashlib.sha256(PDF).hexdigest()
 
 
 def test_create_strips_path_from_filename() -> None:
@@ -95,6 +116,29 @@ def test_create_rejects_file_over_size_limit() -> None:
 
     with pytest.raises(ValidationFailedError):
         _service(FakeSession(), FakeStorage()).create("a.pdf", "application/pdf", too_big)
+
+
+def test_duplicate_upload_is_refused_before_anything_is_stored() -> None:
+    db, storage = FakeSession(), FakeStorage()
+    db.duplicate_id = uuid.uuid4()
+
+    with pytest.raises(ConflictError, match=str(db.duplicate_id)):
+        _service(db, storage).create("a.pdf", "application/pdf", PDF)
+
+    assert storage.uploaded == {}
+    assert db.added == []
+
+
+def test_simultaneous_duplicate_is_refused_and_its_file_removed() -> None:
+    db, storage = FakeSession(), FakeStorage()
+    db.fail_commit_duplicate = True
+
+    with pytest.raises(ConflictError):
+        _service(db, storage).create("a.pdf", "application/pdf", PDF)
+
+    assert db.rolled_back is True
+    assert len(storage.uploaded) == 1
+    assert storage.deleted == list(storage.uploaded)
 
 
 def test_storage_failure_creates_no_row() -> None:

@@ -1,8 +1,10 @@
+import hashlib
 import logging
 import uuid
 from pathlib import PurePath
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -33,6 +35,12 @@ class DocumentService:
     def create(self, filename: str | None, content_type: str | None, data: bytes) -> Document:
         self._validate(content_type, data)
 
+        # The same file twice would create twin chunks and halve the effective top_k.
+        digest = hashlib.sha256(data).hexdigest()
+        existing_id = self._db.scalar(select(Document.id).where(Document.content_sha256 == digest))
+        if existing_id is not None:
+            raise ConflictError(f"This file was already uploaded as document {existing_id}.")
+
         document_id = uuid.uuid4()
         name = self._safe_filename(filename)
         storage_key = f"documents/{document_id}/{name}"
@@ -47,11 +55,17 @@ class DocumentService:
             storage_key=storage_key,
             content_type=PDF_CONTENT_TYPE,
             size_bytes=len(data),
+            content_sha256=digest,
             status="uploaded",
         )
         try:
             self._db.add(document)
             self._db.commit()
+        except IntegrityError:
+            # Two identical uploads at the same moment: the unique constraint stops the second.
+            self._db.rollback()
+            self._remove_orphan(storage_key)
+            raise ConflictError("This file was already uploaded.") from None
         except Exception:
             self._db.rollback()
             self._remove_orphan(storage_key)

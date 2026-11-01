@@ -25,27 +25,43 @@ PROCESSING = "processing"
 PROCESSED = "processed"
 FAILED = "failed"
 
+# A document that kills the worker is claimed again at every run. After this many
+# claims it is marked failed instead, so it cannot loop forever.
+MAX_ATTEMPTS = 3
+
 
 class DocumentStatusService:
     def __init__(self, db: Session) -> None:
         self._db = db
 
     def reset_orphans(self) -> int:
-        """Turn documents left in 'processing' back into 'uploaded'.
+        """Handle documents left in 'processing' by a killed worker.
 
-        Only safe when no ingestion is running: a killed worker never records its
-        outcome, so its document would stay 'processing' forever.
+        Under MAX_ATTEMPTS claims they go back to 'uploaded'; at or over it they are
+        marked 'failed'. Returns how many went back to 'uploaded'. Only safe when no
+        ingestion is running: a killed worker never records its outcome.
         """
-        result = self._db.execute(
+        gave_up = list(
+            self._db.scalars(
+                update(Document)
+                .where(Document.status == PROCESSING, Document.attempts >= MAX_ATTEMPTS)
+                .values(status=FAILED)
+                .returning(Document.id)
+            )
+        )
+        requeued = self._db.execute(
             update(Document).where(Document.status == PROCESSING).values(status=UPLOADED)
         )
         self._db.commit()
-        return result.rowcount
+        for document_id in gave_up:
+            logger.warning("Document %s marked failed after %d attempts", document_id, MAX_ATTEMPTS)
+        return requeued.rowcount
 
     def claim_uploaded(self, limit: int) -> list[uuid.UUID]:
         """Move up to `limit` uploaded documents (oldest first) to 'processing'.
 
         SKIP LOCKED means two callers at the same time never claim the same row.
+        Each claim counts as one attempt.
         """
         ids = list(
             self._db.scalars(
@@ -57,7 +73,11 @@ class DocumentStatusService:
             )
         )
         if ids:
-            self._db.execute(update(Document).where(Document.id.in_(ids)).values(status=PROCESSING))
+            self._db.execute(
+                update(Document)
+                .where(Document.id.in_(ids))
+                .values(status=PROCESSING, attempts=Document.attempts + 1)
+            )
         self._db.commit()
         return ids
 

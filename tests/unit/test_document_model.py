@@ -13,6 +13,8 @@ def test_document_table_name_and_columns() -> None:
         "content_type",
         "size_bytes",
         "status",
+        "attempts",
+        "content_sha256",
         "created_at",
     }
 

@@ -31,6 +31,7 @@ class Document(Base):
     """
 
     __tablename__ = "documents"
+    __table_args__ = (UniqueConstraint("content_sha256", name="uq_documents_content_sha256"),)
 
     # Generated in Python so the ID exists before the insert and can be
     # used to build the storage key.
@@ -45,6 +46,14 @@ class Document(Base):
     # A plain string rather than a Postgres ENUM: ENUMs are awkward to
     # change in migrations. The application enforces the allowed values.
     status: Mapped[str] = mapped_column(String(20), default="uploaded", server_default="uploaded")
+
+    # How many times a worker claimed this document. After MAX_ATTEMPTS a document
+    # left in 'processing' is marked 'failed' instead of retried (D-45).
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    # SHA-256 of the file bytes; a second upload of the same file is refused.
+    # Null for documents uploaded before this column existed.
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
