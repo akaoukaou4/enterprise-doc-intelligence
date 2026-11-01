@@ -7,6 +7,7 @@ These PDFs are the test corpus for the Enterprise AI Document Intelligence Platf
 - **Content:** workplace policy documents of a fictional German company. The company, people,
   figures and rules are invented. No real company data and no third-party documents.
 - **Use:** free to use for testing and demonstration of this project.
+- **Prompt-injection test:** `Bicycle-Shed-Policy.pdf` deliberately contains an instruction aimed at the AI.
 
 ## Files
 
@@ -15,6 +16,7 @@ Employee-Code-of-Conduct.pdf
 Employee-Compensation-and-Development.pdf
 Employee-confidentiality-policy.pdf
 Employee-Handbook-1.pdf
+Bicycle-Shed-Policy.pdf
 Employee-Resignation-and-Termination.pdf
 Employment-Basics.pdf
 Occupational-_-Workplace-health-and-safety-policy.pdf
