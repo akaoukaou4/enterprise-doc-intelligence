@@ -3,7 +3,7 @@
 An internal knowledge assistant. Employees ask questions in natural language about company documents and get answers grounded in those documents, with citations to the source file, page and section. When the documents do not answer, the system says so instead of guessing.
 
 > **Status:** work in progress. The current phase and the plan are in [ROADMAP.md](ROADMAP.md).
-> **Unverified:** the Docker start below works on the author's machine, and the AWS section was followed once by the author. Neither has been followed from a clean machine by someone else (ROADMAP, open questions).
+> **Unverified:** the Docker start below works on the author's machine, and the AWS steps were followed by the author only. Neither has been followed from a clean machine by someone else (ROADMAP, open questions).
 
 ## How it works
 
@@ -24,9 +24,9 @@ Citations are built by code from the stored chunks; the model only says which nu
 | Orchestration | Apache Airflow 3 (LocalExecutor) |
 | UI | Streamlit (an HTTP client of the API) |
 | Run | Docker Compose, one file for the whole system |
-| Cloud | AWS: EC2, RDS PostgreSQL, S3, IAM, SSM (built by hand, [ARCHITECTURE.md](ARCHITECTURE.md) section 12.2) |
+| Cloud | AWS: EC2, RDS PostgreSQL, S3, IAM, SSM |
+| Infrastructure as code | Terraform (`infra/`) |
 | Tooling | uv, Ruff, pytest, pre-commit, GitHub Actions |
-| Planned | Terraform |
 
 ## Quick start (Docker)
 
@@ -39,14 +39,14 @@ Citations are built by code from the stored chunks; the model only says which nu
 copy .env.example .env
 ```
 
-3. Edit `.env` and set the two required values: `HF_TOKEN` (used once, at build time, to put the model into the images; it is never stored in them) and `GEMINI_API_KEY` (needed for questions, not for ingestion). Everything else works as it is. Never commit `.env`.
+3. Edit `.env` and set the two required values: `HF_TOKEN` (used once, at build time, to put the model into the images; never stored in them) and `GEMINI_API_KEY` (needed for questions, not for ingestion). Everything else works as it is. Never commit `.env`.
 4. Build and start everything:
 
 ```powershell
 docker compose up -d --build
 ```
 
-The first build downloads and bakes in the models: 30 to 90 minutes on a hard disk (about 10 minutes on the AWS instance's SSD), about 16 GB of images on the laptop. Later starts take seconds.
+The first build downloads and bakes in the models: 30 to 90 minutes on a hard disk (about 4 minutes on the AWS instance's SSD), about 16 GB of images on the laptop. Later starts take seconds.
 
 | Address | What |
 |---|---|
@@ -104,25 +104,45 @@ docker exec enterprise-doc-intelligence-postgres psql -U app -d enterprise_docs 
 
 ## Check the whole system
 
-With the stack running and a Gemini key set, this uploads a fictional PDF, waits for ingestion, checks search, one answer and one refusal, then deletes it. About 5 minutes and 2 Gemini requests. It needs [uv](https://docs.astral.sh/uv/) on the host; set `API_URL` to test another environment.
+With the stack running and a Gemini key set, this uploads a fictional PDF, waits for ingestion, checks search, one answer and one refusal, then deletes it. About 5 minutes and 2 Gemini requests. It needs [uv](https://docs.astral.sh/uv/) on the host; set `API_URL` to test another environment. It prints 10 PASS lines and `ALL CHECKS PASSED`.
 
 ```powershell
 uv run python -m scripts.e2e_check
 ```
 
-## AWS
+## AWS (Terraform)
 
-The same compose and images run on one EC2 server, with RDS PostgreSQL (pgvector) and S3 instead of the local database and MinIO. It was built by hand in the console (Terraform is the next phase), and nothing is reachable from the internet: the server has no inbound rule, and you open the UI through an SSM tunnel. The full description, the resource list, the delete order, the start and stop steps and the tunnel commands are in [ARCHITECTURE.md](ARCHITECTURE.md) section 12.2; the reasons are in [DECISIONS.md](DECISIONS.md) (D-55 to D-60). Short version of the tunnel, after installing the AWS CLI and the Session Manager plugin:
+The same compose and images run on one EC2 server, with RDS PostgreSQL (pgvector) and S3 instead of the local database and MinIO. The whole infrastructure is Terraform code in `infra/` (14 resources, including a $20 monthly budget with email alerts). **Nothing stays on AWS between sessions:** you apply, use it, and destroy it. Nothing is reachable from the internet: the server has no inbound rule, and you open the UI through an SSM tunnel.
+
+You need Terraform 1.16 or newer, the AWS CLI with the Session Manager plugin, and an AWS account. Secrets reach Terraform only as environment variables set in your terminal (never in a file); the state file is local and holds the database password, so never commit or share it. In PowerShell, from the project folder:
 
 ```powershell
 aws login
 ```
 
 ```powershell
-aws ssm start-session --region eu-north-1 --target <instance-id> --document-name AWS-StartPortForwardingSession --parameters "portNumber=8501,localPortNumber=18501"
+terraform -chdir=infra init
 ```
 
-Then open http://localhost:18501. Run `aws logout` when you are done. The AWS account is on the Free plan, which ends on 2027-04-29, and the stopped resources still cost a little: stop RDS and EC2 when you do not use them (a stopped RDS restarts itself after 7 days).
+```powershell
+$env:TF_VAR_rds_password = [System.Net.NetworkCredential]::new("", (Read-Host "RDS password (12+ letters and digits)" -AsSecureString)).Password
+```
+
+```powershell
+$env:TF_VAR_budget_email = [System.Net.NetworkCredential]::new("", (Read-Host "Budget email" -AsSecureString)).Password
+```
+
+```powershell
+terraform -chdir=infra apply
+```
+
+Then follow the rebuild steps in [ARCHITECTURE.md](ARCHITECTURE.md) section 12.3 (clone on the server, write its `.env`, build, start, run the check, open the tunnel). When done:
+
+```powershell
+terraform -chdir=infra destroy
+```
+
+The reasons are in [DECISIONS.md](DECISIONS.md) (D-55 to D-61). The AWS account is on the Free plan, which ends on 2027-04-29; the real cost of the usage is not measured yet (ROADMAP, open question 2). `force_destroy` on the bucket and `skip_final_snapshot` on the database are safe only for the fictional corpus; remove both before any real data.
 
 ## Develop outside Docker
 
@@ -178,7 +198,7 @@ Run before every push (the pre-push hook runs it too). Start the containers firs
 .\scripts\check.ps1
 ```
 
-Unit tests use fakes: no Docling or model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO and skip themselves when unavailable. CI does not build the Docker images (the gated model needs a token); the images are checked by the end-to-end script. The Streamlit screens are checked by hand. `docker-compose.aws.yml` uses the Compose tags `!reset` and `!override`, so the YAML check in pre-commit runs in its syntax-only mode.
+Unit tests use fakes: no Docling or model, no database, and they never call Gemini. Integration tests (`tests/integration/`) use the real PostgreSQL and MinIO and skip themselves when unavailable. CI does not build the Docker images (the gated model needs a token) and does not check the Terraform files; the images and the deployment are checked by the end-to-end script. The Streamlit screens are checked by hand. `docker-compose.aws.yml` uses the Compose tags `!reset` and `!override`, so the YAML check in pre-commit runs in its syntax-only mode. `.gitattributes` keeps shell scripts on Unix line endings.
 
 ## Known limitations
 
@@ -188,14 +208,15 @@ Unit tests use fakes: no Docling or model, no database, and they never call Gemi
 * No similarity threshold: the model decides when to answer "not found", and a code check rejects answers without a valid citation. On the evaluation set it refused every question the documents cannot answer.
 * An answer can be correct but incomplete: in the hand review of the baseline, 10 of 47 answers missed a required detail (E-4).
 * Ingestion starts up to a minute after upload, and only while Airflow runs. A `failed` document shows only its status; the reason is in the Airflow log.
+* Terraform: the state is local to one machine, and the code was applied from that machine only. The server's subnet is the first of the default VPC's list, so a different order would replace the server.
 * The cost of the AWS usage was not measured yet (ROADMAP, open question 2).
 
-Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4 to E-7) and the backlog in [ROADMAP.md](ROADMAP.md).
+Evaluation results and open items: [DECISIONS.md](DECISIONS.md) (E-4 to E-8) and the backlog in [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 
 * [PROJECT.md](PROJECT.md): product definition and V1 scope
-* [ARCHITECTURE.md](ARCHITECTURE.md): how the system works today
+* [ARCHITECTURE.md](ARCHITECTURE.md): how the system works today, including the AWS rebuild steps
 * [DECISIONS.md](DECISIONS.md): why each choice was made
 * [ROADMAP.md](ROADMAP.md): plan and progress
 * [airflow/README.md](airflow/README.md): the Airflow image and the DAG
