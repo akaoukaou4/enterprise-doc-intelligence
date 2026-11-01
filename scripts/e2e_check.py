@@ -144,7 +144,15 @@ def main() -> int:
     filename = f"e2e-{uuid.uuid4().hex[:8]}-{SOURCE_PDF.name}"
     upload = requests.post(
         f"{BASE}/documents",
-        files={"file": (filename, SOURCE_PDF.read_bytes(), "application/pdf")},
+        # A comment after the PDF's last line changes the hash, so the copy is not
+        # refused as a duplicate of the corpus file (D-19). PDF readers ignore it.
+        files={
+            "file": (
+                filename,
+                SOURCE_PDF.read_bytes() + b"\n% " + filename.encode() + b"\n",
+                "application/pdf",
+            )
+        },
         timeout=60,
     )
     if not check("upload returns 201", upload.status_code == 201, str(upload.status_code)):
