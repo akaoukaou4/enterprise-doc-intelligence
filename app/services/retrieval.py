@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.errors import ValidationFailedError
 from app.db.models import Document, DocumentChunk
 from app.services.embeddings import EmbeddingService
 
@@ -37,11 +38,13 @@ class RetrievalService:
     def search(self, question: str, top_k: int = DEFAULT_TOP_K) -> list[RetrievedChunk]:
         question = question.strip()
         if not question:
-            raise ValueError("The question must not be empty.")
+            raise ValidationFailedError("The question must not be empty.")
         if len(question) > MAX_QUESTION_CHARS:
-            raise ValueError(f"The question is longer than {MAX_QUESTION_CHARS} characters.")
+            raise ValidationFailedError(
+                f"The question is longer than {MAX_QUESTION_CHARS} characters."
+            )
         if not 1 <= top_k <= MAX_TOP_K:
-            raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}.")
+            raise ValidationFailedError(f"top_k must be between 1 and {MAX_TOP_K}.")
 
         query_vector = self._embeddings.embed_query(question)
 

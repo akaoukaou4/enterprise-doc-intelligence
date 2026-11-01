@@ -41,7 +41,7 @@ class RagService:
         self._llm = llm
 
     def ask(self, question: str, top_k: int = DEFAULT_TOP_K) -> RagAnswer:
-        # Invalid input raises ValueError here, before anything else happens.
+        # Invalid input raises ValidationFailedError here, before anything else happens.
         chunks = self._retrieval.search(question, top_k)
         if not chunks:
             logger.info("RAG: no chunks retrieved; Gemini was not called")

@@ -93,9 +93,9 @@ class DocumentService:
     ) -> tuple[list[Document], int]:
         """Return one page of documents, newest first, and the total count."""
         if not 1 <= limit <= MAX_LIST_LIMIT:
-            raise ValueError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
+            raise ValidationFailedError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
         if offset < 0:
-            raise ValueError("offset must be 0 or more")
+            raise ValidationFailedError("offset must be 0 or more")
 
         total = self._db.scalar(select(func.count()).select_from(Document)) or 0
         # id breaks ties, so two pages never overlap or skip a document.
