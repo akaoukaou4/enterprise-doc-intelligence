@@ -39,19 +39,66 @@ https://github.com/user-attachments/assets/86c9cb82-0b32-4eb2-afe1-a417e8c5c820
 
 ## Architecture
 
+Ingestion and questions are two separate paths. They share the database and the embedding model.
+
+### Containers
+
 ```mermaid
 flowchart LR
-    UI[Streamlit UI] -->|HTTP| API[FastAPI]
-    API --> DB[(PostgreSQL + pgvector)]
-    API --> S3[(MinIO / S3)]
-    API --> EMB[EmbeddingGemma<br/>local, CPU]
-    API --> LLM[Gemini API]
-    AF[Airflow DAG<br/>every minute] --> PIPE[Pipeline<br/>Docling, chunk, embed]
-    PIPE --> DB
-    PIPE --> S3
+    user([User]) --> UI[Streamlit UI]
+    UI -->|HTTP only| API[FastAPI API]
+    API --> PG[(PostgreSQL + pgvector)]
+    API --> EMB[EmbeddingGemma<br/>CPU, in process]
+    API --> GEM[Gemini API]
+    API --> STORE[(MinIO or S3)]
+    AF[Airflow scheduler<br/>DAG every minute] --> PIPE[Ingestion pipeline<br/>Docling, chunk, clean]
+    PIPE --> STORE
+    PIPE --> EMB
+    PIPE --> PG
 ```
 
-Full detail: [ARCHITECTURE.md](ARCHITECTURE.md).
+### Question flow
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant UI as Streamlit
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant G as Gemini
+    U->>UI: question
+    UI->>API: POST /api/v1/ask
+    API->>API: embed question (768 dimensions)
+    API->>DB: 8 nearest chunks by cosine distance
+    alt no chunks
+        API-->>UI: fixed "no documents" answer, Gemini not called
+    else chunks found
+        API->>G: numbered sources and question, JSON schema
+        G-->>API: found, answer, source numbers
+        API->>API: keep only numbers that match retrieved chunks
+        API->>API: build citations from stored chunks
+        API-->>UI: answer with citations, or "not found"
+    end
+```
+
+### Document lifecycle
+
+```mermaid
+flowchart LR
+    UP[Upload] --> U1[uploaded]
+    U1 -->|Airflow claims, attempt counted| P1[processing]
+    P1 --> EXT[Docling extract]
+    EXT --> CH[HybridChunker, 512 tokens]
+    CH --> CLN[Clean]
+    CLN --> EMB[EmbeddingGemma]
+    EMB -->|chunks replaced in one transaction| OK[processed]
+    EXT -.->|error| FAIL[failed]
+    CLN -.->|error| FAIL
+    EMB -.->|error| FAIL
+    P1 -.->|claimed 3 times without finishing| FAIL
+```
+
+A document is never claimed after `failed`. Full detail: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Engineering decisions
 
