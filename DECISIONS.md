@@ -154,6 +154,13 @@
   **Rejected.** Extending Phase 14 by about 12 exchanges for CloudWatch; moving it into Phase 15 (portfolio work).
   **Revisit.** When a second environment or real users need monitoring.
 
+- **D-68 Public repository and identity** (Accepted 2026-11-05).
+  **Decision.** The repository is public under the account akaoukaou4, under the MIT License (copyright akaoukaou4). Commits use the GitHub no-reply address. The author history was rewritten once before publication to replace a personal email address and remove AI co-author trailers. Commit messages keep their text, dates and count (87); commit hashes changed. A commit-msg hook (`.git/hooks/commit-msg`) rejects commit messages containing Claude co-author trailers or personal email addresses.
+  **Why.** The project is shown to employers in AI and cloud engineering. Personal contact details must not appear in public Git history.
+  **Rejected.** Keeping the personal email in history (visible on every commit); deleting and recreating the repository (loses the commit history and its effort record).
+  **Limits.** The hook lives inside `.git`, so each new repository needs it installed. GitHub's "block command line pushes that expose my email" setting only blocks new pushes.
+  **Revisit.** Before adding real data, collaborators, or a second machine test result.
+
 ---
 
 ## Evidence
