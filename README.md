@@ -2,7 +2,7 @@
 
 Ask questions about company documents and get answers that cite the file, page and section they come from. When the documents do not contain the answer, the system says so instead of guessing.
 
-[Demo video (52 s)](docs/img/demo.mp4)
+https://github.com/user-attachments/assets/86c9cb82-0b32-4eb2-afe1-a417e8c5c820
 
 ![Documents table](docs/img/01-documents.png)
 
