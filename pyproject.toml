@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Enterprise document intelligence platform with RAG and cited answers"
 readme = "README.md"
 authors = [
-    { name = "akaoukaou", email = "ayoubkoukaou07@gmail.com" }
+        { name = "akaoukaou4", email = "155252858+akaoukaou4@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
