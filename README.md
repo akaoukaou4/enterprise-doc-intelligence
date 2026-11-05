@@ -119,7 +119,7 @@ Considered, not built, with the reason:
 | Hybrid keyword and vector search | Every expected source was already in the top 3 (48 of 48). No measured gap to fix |
 | Reranking | Same reason: the retrieval measurements showed no need |
 | Similarity threshold for refusal | Answerable and unanswerable questions overlap in score (0.38 to 0.76 and 0.16 to 0.66) |
-| Vector index (HNSW, IVFFlat) | 307 chunks: an exact search takes milliseconds |
+| Vector index (HNSW, IVFFlat) | 307 chunks: exact search is fast at this size (not measured) |
 | Agents, fine-tuning, local LLM | No requirement in scope; a fixed pipeline is simpler and easier to evaluate |
 | CloudWatch logs and alarms | Cut at the phase limit; logs are readable on the server (D-67) |
 
@@ -181,7 +181,7 @@ Ingestion takes about 3 to 4 minutes per document. Check the whole system end to
 uv run python -m scripts.e2e_check
 ```
 
-**Verification status.** The author ran the local stack on Windows with Docker Desktop, and ran the AWS deployment end to end on the server (Phases 12 and 13). Not yet done: a second person following these steps on a clean machine.
+**Verification status.** Verified by the author on Windows (local stack) and on AWS (end-to-end check on the server). Not yet tested on a second, clean machine.
 
 ## API
 
